@@ -5,28 +5,30 @@
 # One binary, git-style subcommands. Core owns a per-source JSON event store
 # (~/.config/nagsly/events.d/*.json) and an alarm engine; it knows nothing about
 # any calendar. Calendar sources are plugins (nagsly-fetch-<name> on PATH) that
-# populate events; core just stores and arms them.
+# populate events; core just stores and fires them.
 #
-# The alarm mechanic (proven in the prototype, preserved here): a coarse launchd
-# poll (every 300s) does NOT fire the alarm — it finds the next meeting and, per
-# enabled mode, spawns `nagsly fire <mode> <fire_epoch> ...` DETACHED. The fire
-# process sleeps to the exact second, then fires. That makes firing
-# second-accurate regardless of poll granularity. Re-arming an already-armed
-# (mode, meeting) is an idempotent no-op via a per-mode state file.
+# The alarm mechanic: launchd runs `nagsly poll` on a short interval (60s). The
+# poll finds the next meeting and, per enabled mode, fires INLINE if we're within
+# that mode's lead window and haven't already fired it (a per-(mode,epoch)
+# "fired" marker dedups across the many ticks a meeting spends in-window).
+# Firing is bounded by the poll interval (±60s), not second-accurate — the
+# earlier "spawn a detached sleep-to-the-second fire" model does NOT survive
+# modern macOS launchd (it reaps the poll's whole process tree on exit), and
+# registering the fire as its own launchd job trips a per-arm "Background
+# Activity" notification. Inline firing avoids both.
 #
 #   Subcommands (user-facing):
 #     add "<title>" <when>    append an event to manual.json
 #     list                    merged view of all sources, next-first
 #     rm <id>                 remove one event from manual.json
 #     clear [source]          wipe a source's file (default: manual)
-#     poll                    launchd entry point: arm fires for the next meeting
+#     poll                    launchd entry point: fire modes due for the next meeting
 #     status                  read-only "is it working" rollup
-#     next                    dry-run: next meeting + what it WOULD arm
+#     next                    dry-run: next meeting + what it WOULD fire
 #     stop                    silence a currently-firing alarm
 #     fetch <name> [args...]  run nagsly-fetch-<name> on PATH, repopulate <name>.json
 #
 #   Internal (not user-facing, dispatched from the same binary):
-#     fire <mode> <epoch> ... what the poller spawns detached
 #     build <source>          normalize raw source JSON (stdin) -> canonical
 #                             events.d/<source>.json (used by plugins)
 
@@ -77,9 +79,6 @@ TOAST_LEAD="$(config toast_lead 600)"       # quiet "alarm is live" toast at T-1
 ALARM_LEAD="$(config alarm_lead 60)"        # continuous loud alarm at T-60s
 TOAST_ENABLED="$(config toast_enabled 1)"
 ALARM_ENABLED="$(config alarm_enabled 1)"
-# Don't arm a fire until within this many seconds of firing. Must exceed the
-# launchd poll interval (300s) so no fire is skipped between polls.
-ARM_WINDOW="$(config arm_window 360)"
 SOUND_FILE="$(config sound_file /System/Library/Sounds/Submarine.aiff)"
 ALARM_TIMEOUT="$(config alarm_timeout 90)"  # hard stop for the loop if never dismissed
 
@@ -379,49 +378,65 @@ cmd_fetch() {
   "$plugin" "$@"
 }
 
-# --- the alarm engine --------------------------------------------------------
+# --- the alarm engine (inline: the poller IS the alarm) ----------------------
+#
+# WHY inline, not a detached fire: the prototype spawned `nohup nagsly fire &`
+# to sleep-to-the-exact-second. On modern macOS that DOESN'T survive — launchd
+# reaps a job's whole process tree when the poll exits (nohup/disown/double-fork
+# all die; verified). Registering the fire as its own launchd job survives but
+# trips a "Background Activity" notification on every arm (verified). So the poll
+# fires INLINE, inside the process launchd already owns. The cost is precision:
+# firing is bounded by the poll interval (60s), not second-accurate. For a "nag
+# me when the meeting starts" alarm, +/-60s is fine.
 
-# Arm one mode for the next meeting: spawn `nagsly fire` detached, idempotent
-# via a per-mode state file. dry=1 prints what it WOULD do and arms nothing.
-arm_mode() {
+# Consider one mode for the next meeting and fire it INLINE if we're within its
+# lead window and haven't already fired it. Dedup is a per-(mode,epoch) "fired"
+# marker: a 60s poll sees the same meeting in-window for many ticks, so without
+# the marker it would re-fire every minute. dry=1 prints what it WOULD do. The
+# alarm branch BLOCKS for the alarm's duration (fine — launchd won't start an
+# overlapping poll, and we don't want to while it sounds).
+fire_mode() {
   local mode="$1" lead="$2" epoch="$3" hhmm="$4" title="$5" dry="$6"
   local fire_at=$(( epoch - lead ))
   local n; n="$(now)"
-  local state="$STATE_DIR/arm-${mode}-${epoch}"
+  local marker="$STATE_DIR/fired-${mode}-${epoch}"
 
-  # Past the fire time already? Don't fire late.
-  (( fire_at <= n )) && return 0
-  # Not yet within the arm window? Wait for a later poll — avoids holding a
-  # sleeping process hours early and shrinks reschedule/cancel exposure.
-  (( fire_at - n > ARM_WINDOW )) && return 0
-  # Already armed for this (mode, meeting)? Idempotent no-op.
-  [[ -f "$state" ]] && return 0
+  # Fire iff: within the lead window (now >= fire_at) AND the meeting hasn't
+  # started yet (now < epoch) AND we haven't already fired this (mode, meeting).
+  (( n < fire_at )) && return 0    # too early — a later poll will catch it
+  (( n >= epoch ))  && return 0    # meeting already started — don't fire late
+  [[ -f "$marker" ]] && return 0   # already fired this (mode, meeting)
 
   if [[ "$dry" == "1" ]]; then
-    echo "WOULD arm $mode for '$title' @ $hhmm — fire at $(date -r "$fire_at" '+%T') (lead ${lead}s)"
+    echo "WOULD fire $mode for '$title' @ $hhmm (lead ${lead}s, within window)"
     return 0
   fi
 
   mkdir -p "$STATE_DIR"
-  # Record the arm BEFORE spawning so a crash mid-spawn doesn't double-arm.
-  printf '%s\t%s\t%s\n' "$epoch" "$hhmm" "$title" > "$state"
-  nohup "$0" fire "$mode" "$fire_at" "$title" "$hhmm" "$state" >/dev/null 2>&1 &
-  local spawn_pid=$!
-  # If the spawn didn't take (e.g. $0 not executable), the fire never runs and
-  # never clears its state file — that (mode, meeting) would be permanently
-  # "armed" and silently never fire. Verify the child is alive; if not, drop the
-  # state so the next poll re-arms.
-  if ! kill -0 "$spawn_pid" 2>/dev/null; then
-    rm -f "$state"
-    log "ERROR: failed to spawn fire for '$title' @ $hhmm — will retry next poll"
-    return 1
-  fi
-  log "armed $mode for '$title' @ $hhmm — fire at $(date -r "$fire_at" '+%T')"
+  # Mark BEFORE firing so a crash mid-fire doesn't re-fire every tick.
+  printf '%s\t%s\t%s\t%s\n' "$mode" "$epoch" "$hhmm" "$title" > "$marker"
+  log "firing $mode for '$title' @ $hhmm"
+  do_fire "$mode" "$title" "$hhmm"
+}
+
+# Prune stale fired-markers: any marker whose meeting epoch is in the past can
+# never fire again, so drop it (keeps STATE_DIR from growing unbounded).
+prune_markers() {
+  local n; n="$(now)"
+  shopt -s nullglob
+  local m ep
+  for m in "$STATE_DIR"/fired-*; do
+    ep="${m##*-}"
+    [[ "$ep" =~ ^[0-9]+$ ]] || continue
+    (( ep <= n )) && rm -f "$m"
+  done
+  shopt -u nullglob
 }
 
 cmd_poll() {
   local dry="${1:-0}"
   mkdir -p "$STATE_DIR"
+  [[ "$dry" == "1" ]] || prune_markers
   local rows rc
   rows="$(read_events)"; rc=$?
   if (( rc != 0 )); then
@@ -439,60 +454,61 @@ cmd_poll() {
   IFS=$'\t' read -r epoch hhmm source id title <<< "$nxt"
 
   local note=""
-  [[ "$TOAST_ENABLED" == "1" ]] && { arm_mode toast "$TOAST_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="toast "; }
-  [[ "$ALARM_ENABLED" == "1" ]] && { arm_mode alarm "$ALARM_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="alarm "; }
+  [[ "$TOAST_ENABLED" == "1" ]] && { fire_mode toast "$TOAST_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="toast "; }
+  [[ "$ALARM_ENABLED" == "1" ]] && { fire_mode alarm "$ALARM_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="alarm "; }
 
   log "checked — next: '$title' @ $hhmm (modes: ${note:-none})"
   [[ "$dry" == "1" ]] && echo "next: '$title' @ $hhmm (epoch $epoch)"
   return 0
 }
 
-cmd_fire() {
-  local mode="${1:?fire: mode required}" fire_epoch="${2:?fire: epoch required}"
-  local title="${3:-meeting}" hhmm="${4:-}"
+# Sentinel baked into the afplay-loop subshell's argv so `nagsly stop` can
+# pkill JUST the loop, not the poller it runs inside.
+ALARM_LOOP_TAG="nagsly-alarm-loop"
+
+# Fire a mode NOW, inline (called by fire_mode when we're in the window). No
+# sleep — the poll already decided it's time. Toast is quick and backgrounded;
+# alarm blocks for its duration (fine — see fire_mode).
+do_fire() {
+  local mode="$1" title="$2" hhmm="$3"
   local ALERTER="${ALERTER:-alerter}"
-  # Global (not local): the EXIT trap runs after cmd_fire's locals are out of
-  # scope, so a `local` here would be unbound under `set -u` when cleanup fires.
-  NAGSLY_FIRE_STATE="${5:-}"
 
-  cleanup() { [[ -n "${NAGSLY_FIRE_STATE:-}" && -f "${NAGSLY_FIRE_STATE:-}" ]] && rm -f "$NAGSLY_FIRE_STATE"; return 0; }
-  trap cleanup EXIT
-
-  # Test safety: NAGSLY_DRY_FIRE makes a fire clear its state and exit WITHOUT
-  # sleeping, playing audio, or showing a dialog. The whole bats suite exports
-  # this, so no test can ever produce a runaway looping alarm — even if a fire
-  # is spawned with a fire_epoch in the (real) past, which would otherwise skip
-  # the sleep and fire instantly.
+  # Test safety: NAGSLY_DRY_FIRE makes a fire a no-op echo — no audio, no dialog.
+  # The whole bats suite exports it, so no test can ever produce real sound.
   if [[ -n "${NAGSLY_DRY_FIRE:-}" ]]; then
-    echo "nagsly: DRY fire $mode for '$title' @ $hhmm (fire_epoch $fire_epoch)"
+    echo "nagsly: DRY fire $mode for '$title' @ $hhmm"
     return 0
   fi
 
-  # Sleep to the exact second (a plain sleep, not launchd's minute granularity).
-  # Uses REAL wall-clock time (not NAGSLY_NOW): a fire is a live future timer.
-  local delay=$(( fire_epoch - $(date +%s) ))
-  (( delay > 0 )) && sleep "$delay"
-
   case "$mode" in
     toast)
-      "$ALERTER" --title "⏰ nagsly live" --subtitle "$title" \
-        --message "Coming up at ${hhmm}" --timeout 15 >/dev/null 2>&1 || true
+      # Backgrounded so the quiet liveness toast never delays the poll.
+      ( "$ALERTER" --title "⏰ nagsly live" --subtitle "$title" \
+          --message "Coming up at ${hhmm}" --timeout 15 >/dev/null 2>&1 || true ) &
+      disown 2>/dev/null || true
       ;;
     alarm)
       # Continuous afplay loop (afplay does ALL audio — alerter's sound flag is
-      # unreliable; alerter is visual only). Capture the loop PID so the timeout
-      # and the Stop action kill THIS loop.
-      ( while :; do afplay "$SOUND_FILE"; done ) &
+      # unreliable; alerter is visual only). The loop is SELF-BOUNDING: it checks
+      # a deadline each iteration and stops itself after ALARM_TIMEOUT. This is
+      # deliberate — a *separate* `sleep; kill` timer would be a background child
+      # that launchd reaps when the poll's tick ends, leaving the loop running
+      # forever with no killer (a real runaway we hit). A self-bounding loop
+      # needs no external killer, so it auto-stops even if the poll is reaped
+      # mid-alarm. Exec'd via `bash -c ... "$ALARM_LOOP_TAG"` so its argv carries
+      # the sentinel and `nagsly stop`'s pkill matches THIS loop, not the poller.
+      bash -c '
+        deadline=$(( $(date +%s) + $2 ))
+        while (( $(date +%s) < deadline )); do afplay "$1"; done
+      ' "$ALARM_LOOP_TAG" "$SOUND_FILE" "$ALARM_TIMEOUT" &
       local loop_pid=$!
-      disown "$loop_pid" 2>/dev/null || true
-      ( sleep "$ALARM_TIMEOUT"; kill "$loop_pid" 2>/dev/null; killall afplay 2>/dev/null ) &
-      local timeout_pid=$!
-      disown "$timeout_pid" 2>/dev/null || true
+      # alerter blocks until Stop / close / timeout — that's the intended nag.
+      # On Stop/close we kill the loop early; otherwise the loop self-stops at
+      # its deadline. Give alerter the same timeout so it doesn't outlast sound.
       "$ALERTER" --title "⏰ MEETING NOW" --subtitle "$title" \
         --message "Starts ${hhmm} — click Stop to silence" \
         --close-label "Stop" --timeout "$ALARM_TIMEOUT" >/dev/null 2>&1 || true
       kill "$loop_pid" 2>/dev/null || true
-      kill "$timeout_pid" 2>/dev/null || true
       killall afplay 2>/dev/null || true
       ;;
     *) die "fire: unknown mode '$mode'" ;;
@@ -500,10 +516,10 @@ cmd_fire() {
 }
 
 cmd_stop() {
-  # Kill the alarm-mode fire loop(s) first so they don't respawn afplay (the
-  # loop subshell inherits the parent argv, so pkill -f matches it too), then
+  # Kill the alarm loop(s) first so they don't respawn afplay (match the
+  # sentinel argv, NOT 'nagsly poll' — that would kill the poller), then
   # silence in-flight playback.
-  pkill -f 'nagsly fire alarm' 2>/dev/null || true
+  pkill -f "$ALARM_LOOP_TAG" 2>/dev/null || true
   killall afplay 2>/dev/null || true
   echo "nagsly: silenced."
 }
@@ -556,20 +572,20 @@ cmd_status() {
     echo "  next:   (none upcoming)"
   fi
 
-  # armed fires
+  # fires already delivered for still-upcoming meetings (fired-markers; pruned
+  # once a meeting is past). Shows what nagsly has nagged you about this cycle.
   shopt -s nullglob
-  local armed=("$STATE_DIR"/arm-*)
+  local fired=("$STATE_DIR"/fired-*)
   shopt -u nullglob
-  if (( ${#armed[@]} > 0 )); then
-    echo "  armed:  ${#armed[@]} fire(s) pending:"
-    local a
-    for a in "${armed[@]}"; do
-      local _ae ah at
-      IFS=$'\t' read -r _ae ah at < "$a"
-      echo "            $(basename "$a" | sed -E 's/^arm-([a-z]+)-.*/\1/') → '$at' @ $ah"
+  if (( ${#fired[@]} > 0 )); then
+    echo "  fired:  ${#fired[@]} this cycle:"
+    local f fm fe fh ft
+    for f in "${fired[@]}"; do
+      IFS=$'\t' read -r fm fe fh ft < "$f"
+      echo "            $fm → '$ft' @ $fh"
     done
   else
-    echo "  armed:  (none — fires arm only within their lead window)"
+    echo "  fired:  (none yet — modes fire within their lead window)"
   fi
 
   # mode toggles
@@ -592,9 +608,9 @@ nagsly — a continuous, dismiss-to-stop meeting alarm for macOS
   nagsly list                   merged view of all sources, next-first
   nagsly rm <id>                remove one manual event
   nagsly clear [source]         wipe a source's file (default: manual)
-  nagsly poll                   launchd entry point: arm the next meeting
+  nagsly poll                   launchd entry point: fire modes due now
   nagsly status                 read-only "is it working" rollup
-  nagsly next                   dry-run: next meeting + what it WOULD arm
+  nagsly next                   dry-run: next meeting + what it WOULD fire
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
 EOF
@@ -612,7 +628,6 @@ main() {
     status) cmd_status ;;
     stop)   cmd_stop ;;
     fetch)  cmd_fetch "$@" ;;
-    fire)   cmd_fire "$@" ;;
     build)  cmd_build "$@" ;;
     ""|-h|--help|help) usage ;;
     *)      usage >&2; die "unknown subcommand: $cmd" ;;

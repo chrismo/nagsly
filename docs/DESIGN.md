@@ -87,9 +87,10 @@ nagsly stop                     # silence a currently-firing alarm
 nagsly fetch <name> [args...]   # run `nagsly-fetch-<name>` on PATH, repopulate <name>.json
 ```
 
-Internal subcommands (`fire`, `build`) dispatch from the same binary but are not
-user-facing (`fire` is what the poller spawns detached; `build`/normalize is a
-helper the plugins call).
+Internal subcommand `build` dispatches from the same binary but is not
+user-facing (`build`/normalize is a helper the plugins call). (The prototype
+also had an internal `fire` subcommand the poller spawned detached; the inline
+firing model — see the core mechanic below — removed it.)
 
 ### Language
 
@@ -115,35 +116,45 @@ reason.
 Each mode independently enable/disable-able (run toast-only first to build trust,
 then flip the loud alarm on).
 
-### "Coarse poll arms a precise one-shot" — the core mechanic
+### The core mechanic — inline firing (revised from the prototype)
 
-The poller does **not** fire the alarm. On each run it finds the next meeting and,
-per enabled mode, spawns `nagsly fire <mode> <fire_epoch> ...` **detached**. The
-fire process `sleep`s to the exact second, then fires. This makes firing
-**second-accurate** regardless of poll granularity (a plain `sleep`, not
-launchd's minute-granular scheduler). Re-arming an already-armed `(mode, meeting)`
-is a no-op via a per-mode state file `~/.config/nagsly/state/arm-<mode>-<epoch>`.
-The fire clears its state file on EXIT.
+> **Design change, made during the build — this supersedes the prototype's
+> "coarse poll arms a precise detached one-shot".** The prototype spawned
+> `nagsly fire … &` (nohup, detached) to `sleep` to the exact second, for
+> second-accurate firing. That model was proven from an interactive shell but
+> **does not survive the launchd daemon on modern macOS** (verified on-device):
+> launchd reaps a job's entire process tree when the poll exits — `nohup`,
+> `disown`, and double-fork all die. Registering each fire as its own launchd
+> job *does* survive, but trips a per-arm **"Background Activity" notification**
+> (Ventura+ BTM; also verified). Both were dead ends.
 
-### Arm window (proven, keep)
+The poller now **fires inline**. launchd runs `nagsly poll` on a short interval
+(`StartInterval` **60s**). Each run finds the next meeting and, per enabled mode,
+fires **inside the poll process** if `now` is within that mode's lead window
+(`fire_at <= now < event_epoch`) and it hasn't already fired. Firing is bounded
+by the poll interval (**±60s**), not second-accurate — acceptable for a
+"nag-me-when-it-starts" alarm, and it stops fighting launchd.
 
-A fire only arms once it is within `ARM_WINDOW` (default **360s**, must exceed the
-launchd poll interval of 300s) of firing. This prevents arming hours-early and
-holding a sleeping process all day, and shrinks the reschedule/cancel exposure
-(below) from hours to minutes.
+Dedup: a per-`(mode, epoch)` marker `~/.config/nagsly/state/fired-<mode>-<epoch>`.
+A 60s poll sees the same meeting in-window for many ticks; the marker fires each
+mode exactly once. Markers whose meeting epoch is now past are pruned each poll.
 
-### Sound is `afplay`, never `alerter`
+### Sound is `afplay`, never `alerter` — and the loop is self-bounding
 
 `alerter`'s own sound flag is unreliable (confirmed on this machine — Chris hit it
 in an RWX script too). `alerter` is **visual only** here; a looping `afplay`
-subshell does all audio, killed by `nagsly stop` / the auto-timeout / the Stop
-action. `nagsly stop` = `pkill -f 'nagsly fire ... alarm'` (the fire subshell
-inherits the parent argv so pkill -f matches the loop too — verified) + `killall
-afplay`.
+subshell does all audio. The loop is **self-bounding**: it checks a deadline each
+iteration and stops itself after `alarm_timeout`. This is deliberate — a
+*separate* `sleep; kill` timer is a background child that launchd reaps when the
+poll's tick ends, leaving the loop running forever with no killer (a real runaway
+hit during the build). A self-bounding loop auto-stops even if the poll is reaped
+mid-alarm. The loop's argv carries a sentinel (`nagsly-alarm-loop`) so
+`nagsly stop` = `pkill -f nagsly-alarm-loop` + `killall afplay` matches the loop
+without killing the poller it runs inside (verified).
 
 ### launchd agent
 
-`StartInterval` 300s + `RunAtLoad`, **NOT** `KeepAlive`. The poller is a
+`StartInterval` 60s + `RunAtLoad`, **NOT** `KeepAlive`. The poller is a
 short-lived script, not a daemon — `KeepAlive` would tight-loop it. Silent-failure
 protection = the unconditional 5-min re-run (a failed poll self-heals next tick) +
 a heartbeat line each run in `~/.config/nagsly/nagsly.log`. `nagsly status` reads
@@ -158,10 +169,10 @@ outside the login session false-reports "not loaded".
 
 ```
 nagsly status
-  poller: loaded (launchd), last heartbeat 2m ago
+  poller: loaded (launchd), last heartbeat 40s ago
   feed:   7 meeting(s) across 2 source(s)
   next:   'Eng managers chat' @ 15:30 (in 4h)
-  armed:  (none — fires arm only within their lead window)
+  fired:  (none yet — modes fire within their lead window)
   modes:  toast on (T-10m)   alarm on (T-60s)
 ```
 This is the primary "is it working" surface — Chris's whole motivation for the
@@ -251,14 +262,15 @@ this tooling (sibling of his day-timeline pipelines).
 ~/.config/nagsly/
   config.json         # knobs (JSON — Chris wants JSON for all config/storage)
   events.d/*.json     # per-source event stores
-  state/arm-*         # per-mode arm idempotency markers
+  state/fired-*       # per-(mode,epoch) "already fired" markers (pruned when past)
   nagsly.log          # heartbeat log
 ```
 Knobs: `toast_lead` (600), `alarm_lead` (60), `toast_enabled`, `alarm_enabled`,
-`sound_file` (default a `/System/Library/Sounds/*.aiff`), `alarm_timeout` (90),
-`arm_window` (360). All overridable via env for tests (the prototype used
-`MEETING_ALARM_NOW` + `MEETING_ALARM_DIR` for deterministic bats — carry that
-pattern with a `NAGSLY_*` prefix).
+`sound_file` (default `/System/Library/Sounds/Submarine.aiff`), `alarm_timeout`
+(90). All overridable via env for tests (the prototype used `MEETING_ALARM_NOW` +
+`MEETING_ALARM_DIR` for deterministic bats — carried here with a `NAGSLY_*`
+prefix; `NAGSLY_DRY_FIRE` makes a fire a silent no-op so no test produces audio).
+(`arm_window` is gone — it belonged to the removed detached-arm model.)
 
 ---
 
@@ -277,10 +289,13 @@ existing one).
 ## Tests
 
 Carry the prototype's `bats` approach: `$TMPDIR`-isolated `NAGSLY_DIR` per test,
-pinned `NAGSLY_NOW` + `TZ=America/Chicago` for deterministic epoch/HH:MM. Port the
-existing 12 tests (`seed/meeting-alarm.bats`) and add coverage for the new surface:
-`add`/`list`/`rm`/`clear`, the per-source merge, and the plugin dispatch. Keep the
-all-hands-not-solo-hold regression test and the arm-window tests.
+pinned `NAGSLY_NOW` + `TZ=America/Chicago` for deterministic epoch/HH:MM. The
+prototype's 12 tests were ported and extended (31 total) to cover the new
+surface: `add`/`list`/`rm`/`clear`, the per-source merge, id stability, plugin
+dispatch, the inline fire-window + dedup + prune, and a silent stubbed-alerter
+alarm-wiring test. Kept: the all-hands-not-solo-hold regression test and the
+fire-window (formerly arm-window) tests. The whole suite exports
+`NAGSLY_DRY_FIRE=1` so no test can ever produce real audio.
 
 ---
 
@@ -299,11 +314,14 @@ all-hands-not-solo-hold regression test and the arm-window tests.
 
 ---
 
-## Reschedule/cancel — the one known limitation (documented, accepted)
+## Reschedule/cancel
 
-State/arm files key on the meeting's epoch; an armed fire keeps its sleeping
-timer. If a meeting is rescheduled/cancelled *after* it was armed, the old fire
-still goes off (a new arm is made for the new time). The arm window bounds this to
-a reschedule/cancel in roughly the last ~10 min before the meeting — rare, benign
-(a spurious alarm to dismiss). Not reconciled beyond the arm window. Acceptable
-for a personal alarm.
+The inline model largely dissolves the prototype's known reschedule/cancel
+limitation. Because nothing is pre-armed — each poll re-reads the feed and
+decides fresh whether a mode is due — a meeting that moves or cancels is picked
+up on the next 60s tick, as long as the feed is refreshed (`nagsly fetch`). The
+only residual exposure is within a single mode's lead window: if a meeting is
+cancelled *after* its `fired-<mode>-<epoch>` marker is written but the feed
+hasn't refreshed, that one already-delivered alarm stands. Rare, benign (a
+spurious alarm to dismiss), and far smaller than the prototype's hours-long
+sleeping-timer exposure.

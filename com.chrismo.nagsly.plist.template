@@ -36,10 +36,12 @@
         <string>__HOME__/.asdf/shims:__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
-    <!-- Poll every 5 minutes. Granularity does NOT affect firing precision: the
-         poller arms a second-accurate detached sleep, not the fire itself. -->
+    <!-- Poll every 60s. The poller fires INLINE (it does not spawn a detached
+         sleep-to-the-second fire — that model doesn't survive launchd on modern
+         macOS), so firing precision is bounded by this interval: a mode fires
+         within ~60s of its lead. Tighten for more precision at more wakeups. -->
     <key>StartInterval</key>
-    <integer>300</integer>
+    <integer>60</integer>
 
     <!-- Also run once at load, so it arms the next meeting immediately. -->
     <key>RunAtLoad</key>

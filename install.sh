@@ -83,7 +83,7 @@ info "wrote launchd plist -> $PLIST_DST"
 launchctl bootout "gui/$UID_/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$UID_" "$PLIST_DST"
 launchctl enable "gui/$UID_/$LABEL" 2>/dev/null || true
-info "loaded launchd agent $LABEL (polls every 5m + at load)"
+info "loaded launchd agent $LABEL (polls every 60s + at load)"
 
 # --- receipt -----------------------------------------------------------------
 if launchctl print "gui/$UID_/$LABEL" >/dev/null 2>&1; then

@@ -215,7 +215,7 @@ build_gws() {
   [[ "${lines[2]}" == *"[manual]"* ]]
 }
 
-# ── the alarm engine: arm-window + dry-run (ported) ──────────────────────────
+# ── the alarm engine: inline fire-window + dry-run ───────────────────────────
 
 # Put one manual meeting `secs` seconds after NAGSLY_NOW.
 seed_meeting() {
@@ -227,57 +227,81 @@ seed_meeting() {
     > "$NAGSLY_DIR/events.d/manual.json"
 }
 
-@test "next arms nothing when the meeting is far beyond the arm window" {
-  # 17h out: toast fire (T-10m) is ~16.8h away, far past ARM_WINDOW=360.
+@test "next fires nothing when the meeting is beyond every mode's lead" {
+  # 17h out: even the toast (T-10m) window doesn't open for ~16.8h.
   seed_meeting $(( 17 * 3600 ))
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" != *"WOULD arm"* ]]
+  [[ "$output" != *"WOULD fire"* ]]
   [[ "$output" == *"Soon"* ]]   # still reported as next
 }
 
-@test "next arms the alarm once the meeting enters the arm window" {
-  # 90s out: alarm fire_at = T-60s = 30s away, within ARM_WINDOW=360.
-  seed_meeting 90
+@test "next fires the alarm once the meeting is inside the alarm lead" {
+  # 30s out: within the T-60s alarm lead (fire_at is 30s in the past, meeting
+  # still future) -> the alarm mode is due.
+  seed_meeting 30
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" == *"WOULD arm alarm"* ]]
+  [[ "$output" == *"WOULD fire alarm"* ]]
 }
 
-@test "arm is idempotent: an already-armed mode is a dry-run no-op" {
-  # 90s out: alarm is within the arm window. Pre-create the alarm state file
-  # (simulating an earlier poll's arm). `next` (dry-run) must then NOT claim it
-  # would arm the alarm again — the state file makes re-arm a no-op.
-  seed_meeting 90
-  local epoch=$(( NAGSLY_NOW + 90 ))
+@test "does not fire once the meeting has already started" {
+  # 10s in the PAST: past the meeting start -> not fired (don't nag late), and
+  # read_events drops it from 'next' entirely.
+  seed_meeting -10
+  run "$BIN" next
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WOULD fire"* ]]
+}
+
+@test "fire is idempotent: an already-fired mode is not fired again" {
+  # Within the alarm lead, but a fired-marker exists (an earlier tick fired it).
+  # `next` must NOT claim it would fire the alarm again.
+  seed_meeting 30
+  local epoch=$(( NAGSLY_NOW + 30 ))
   mkdir -p "$NAGSLY_DIR/state"
-  printf '%s\t%s\t%s\n' "$epoch" "09:59" "Soon" > "$NAGSLY_DIR/state/arm-alarm-$epoch"
+  printf 'alarm\t%s\t09:59\tSoon\n' "$epoch" > "$NAGSLY_DIR/state/fired-alarm-$epoch"
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" != *"WOULD arm alarm"* ]]
+  [[ "$output" != *"WOULD fire alarm"* ]]
 }
 
-@test "poll spawns a dry fire and records an arm state file" {
-  # With NAGSLY_DRY_FIRE the spawned fire exits immediately (no audio/sleep). A
-  # real poll therefore just proves the spawn path runs cleanly end to end.
-  seed_meeting 90
+@test "poll fires inline and writes a fired-marker (dry, no audio)" {
+  # With NAGSLY_DRY_FIRE, a due mode is a no-op echo but the fired-marker is
+  # still written — proving the dedup path. Meeting 30s out = alarm due.
+  seed_meeting 30
+  run "$BIN" poll
+  [ "$status" -eq 0 ]
+  local epoch=$(( NAGSLY_NOW + 30 ))
+  [ -f "$NAGSLY_DIR/state/fired-alarm-$epoch" ]
+  # A second poll must NOT re-fire (marker present).
   run "$BIN" poll
   [ "$status" -eq 0 ]
 }
 
-@test "arm respects mode toggles (alarm off => no alarm arm)" {
-  seed_meeting 90
+@test "prune drops fired-markers for meetings now in the past" {
+  # A marker for a meeting 5s ago should be pruned on the next poll.
+  seed_meeting 3600                        # a future meeting so poll has work
+  local old=$(( NAGSLY_NOW - 5 ))
+  mkdir -p "$NAGSLY_DIR/state"
+  printf 'alarm\t%s\t00:00\tOld\n' "$old" > "$NAGSLY_DIR/state/fired-alarm-$old"
+  run "$BIN" poll
+  [ ! -f "$NAGSLY_DIR/state/fired-alarm-$old" ]
+}
+
+@test "fire respects mode toggles (alarm off => alarm not fired)" {
+  seed_meeting 30
   ALARM_ENABLED=0 run "$BIN" next
-  [[ "$output" != *"WOULD arm alarm"* ]]
+  [[ "$output" != *"WOULD fire alarm"* ]]
 }
 
 # ── alarm fire wiring (no real audio) ────────────────────────────────────────
 
-@test "alarm fire runs the afplay loop and stops on timeout (stubbed, silent)" {
-  # Verify the alarm-mode wiring end to end WITHOUT real sound or a blocking
-  # dialog: stub afplay + alerter on PATH so nothing audible/visible happens.
-  # afplay records each invocation; a 1s alarm_timeout stops the loop; alerter
-  # returns immediately (mimicking a Stop click) so the fire doesn't block.
+@test "alarm fires the afplay loop inline and stops on timeout (stubbed, silent)" {
+  # Verify the alarm wiring end to end WITHOUT real sound or a blocking dialog:
+  # stub afplay + alerter on PATH. Meeting 30s out = alarm due; a 1s
+  # alarm_timeout stops the loop; the stub alerter returns immediately.
+  # NAGSLY_DRY_FIRE MUST be unset for this one test so the real path runs.
   local stub="$TEST_DIR/stub"; mkdir -p "$stub"
   cat > "$stub/afplay" <<EOF
 #!/usr/bin/env bash
@@ -290,11 +314,9 @@ exit 0
 EOF
   chmod +x "$stub/afplay" "$stub/alerter"
 
-  # fire_epoch in the past => no sleep; fire immediately. NAGSLY_DRY_FIRE MUST be
-  # unset for this one test so the real alarm path runs (against the stubs).
-  local past=$(( NAGSLY_NOW - 10 ))
+  seed_meeting 30
   run env -u NAGSLY_DRY_FIRE PATH="$stub:$PATH" ALERTER=alerter ALARM_TIMEOUT=1 \
-    "$BIN" fire alarm "$past" "Wiring test" "09:59"
+    TOAST_ENABLED=0 "$BIN" poll
   [ "$status" -eq 0 ]
 
   # afplay was invoked at least once with the configured sound file.
