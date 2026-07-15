@@ -12,7 +12,7 @@
   "toast_enabled": 1,
   "alarm_enabled": 1,
 
-  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds).",
-  "sound_file": "/System/Library/Sounds/Sosumi.aiff",
+  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Submarine, Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds).",
+  "sound_file": "/System/Library/Sounds/Submarine.aiff",
   "alarm_timeout": 90
 }

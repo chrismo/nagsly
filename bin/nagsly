@@ -67,7 +67,7 @@ ALARM_ENABLED="$(config alarm_enabled 1)"
 # Don't arm a fire until within this many seconds of firing. Must exceed the
 # launchd poll interval (300s) so no fire is skipped between polls.
 ARM_WINDOW="$(config arm_window 360)"
-SOUND_FILE="$(config sound_file /System/Library/Sounds/Sosumi.aiff)"
+SOUND_FILE="$(config sound_file /System/Library/Sounds/Submarine.aiff)"
 ALARM_TIMEOUT="$(config alarm_timeout 90)"  # hard stop for the loop if never dismissed
 
 # Guard against a silently-broken config: if config.json EXISTS but doesn't

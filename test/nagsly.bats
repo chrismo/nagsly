@@ -299,7 +299,7 @@ EOF
 
   # afplay was invoked at least once with the configured sound file.
   [ -f "$TEST_DIR/afplay.calls" ]
-  grep -q "Sosumi.aiff" "$TEST_DIR/afplay.calls"
+  grep -q "Submarine.aiff" "$TEST_DIR/afplay.calls"
 
   # The fire returned (status 0 above) rather than looping forever — the
   # alarm_timeout=1 path killed the loop. (We don't pgrep global afplay: that
