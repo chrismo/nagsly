@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# nagsly-fetch-gws — standalone Google Calendar feeder for nagsly.
+#
+# A `nagsly fetch gws` plugin (git-style external subcommand: `nagsly fetch gws`
+# runs `nagsly-fetch-gws` on PATH). Its job:
+#   1. pull upcoming events from Google Calendar via `gws` (the Google Workspace
+#      CLI — github.com/googleworkspace/cli),
+#   2. hand the raw Google Calendar API JSON to `nagsly build gws`, which applies
+#      ALL filtering + normalization (deterministically, in SuperDB) and writes
+#      events.d/gws.json wholesale.
+#
+# Why gws (over gcalcli): gws exposes the Google Calendar API v3 verbatim as
+# JSON, so we get `eventType`, `organizer.self`, per-attendee `self`, and
+# `status` — the exact fields nagsly's proven filter set keys on (the all-hands-
+# not-solo-hold distinction needs `organizer.self`, which gcalcli's TSV output
+# drops). We request `singleEvents=true` so Google expands recurring meetings
+# server-side — no RRULE-expansion engine needed.
+#
+# Dependency note: gws is Apache-2.0 and open source, but its README states it
+# is "not an officially supported Google product." A one-time interactive OAuth
+# (`gws auth login`) is required; run that yourself before the poller relies on
+# this feed.
+#
+# Usage:
+#   nagsly-fetch-gws [days]        # default: next 4 days (3–4 business days)
+#   nagsly fetch gws [days]        # same, via the dispatcher
+
+set -euo pipefail
+
+DAYS="${1:-4}"
+[[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "nagsly-fetch-gws: days must be an integer" >&2; exit 2; }
+
+command -v gws     >/dev/null 2>&1 || { echo "nagsly-fetch-gws: gws not found on PATH (see https://github.com/googleworkspace/cli)" >&2; exit 127; }
+command -v nagsly  >/dev/null 2>&1 || { echo "nagsly-fetch-gws: nagsly not found on PATH" >&2; exit 127; }
+
+# Window: [now, now + DAYS] in RFC3339-with-offset (the API's timeMin/timeMax).
+time_min="$(date "+%Y-%m-%dT%H:%M:%S%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
+time_max="$(date -v+"${DAYS}"d "+%Y-%m-%dT%H:%M:%S%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
+
+# events.list with singleEvents (server-side recurrence expansion) + eventTypes
+# filter (default only, so focus/OOO/working-location/birthday never come back).
+# --page-all emits NDJSON: one JSON object PER PAGE, each an API response with an
+# `items` array. We merge every page's items into a single {"events":[...]} —
+# the shape `nagsly build` consumes — via SuperDB (collect all items, wrap).
+params='{"calendarId":"primary","singleEvents":true,"orderBy":"startTime","eventTypes":["default"],"timeMin":"'"$time_min"'","timeMax":"'"$time_max"'"}'
+
+export ASDF_SUPERDB_VERSION="${ASDF_SUPERDB_VERSION:-0.3.0}"
+
+gws calendar events list --format json --page-all --params "$params" \
+  | super -dynamic -f json -c '
+      unnest coalesce(items, [])
+      | collect(this)
+      | values {events: this}
+    ' - \
+  | nagsly build gws

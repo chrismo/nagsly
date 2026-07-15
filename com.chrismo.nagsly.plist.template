@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the nagsly poller.
+
+  install.sh writes the concrete plist to
+  ~/Library/LaunchAgents/com.chrismo.nagsly.plist with __HOME__ substituted,
+  then `launchctl bootstrap`s it. ProgramArguments points at the copy of the
+  binary in ~/.local/bin (a real local exec path — launchd cannot exec scripts
+  under ~/Library/CloudStorage).
+
+  Manual (re)load:
+    launchctl bootout   "gui/$(id -u)/com.chrismo.nagsly" 2>/dev/null
+    launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.chrismo.nagsly.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.chrismo.nagsly</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/nagsly</string>
+        <string>poll</string>
+    </array>
+
+    <!-- Poll every 5 minutes. Granularity does NOT affect firing precision: the
+         poller arms a second-accurate detached sleep, not the fire itself. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <!-- Also run once at load, so it arms the next meeting immediately. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- NOT KeepAlive: the poller is a short-lived script, not a daemon.
+         KeepAlive would tight-loop it. A failed poll self-heals on the next
+         5-minute tick; a heartbeat line each run lets `nagsly status` tell
+         "loaded" from "actually executing". -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/nagsly.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/nagsly.err.log</string>
+</dict>
+</plist>

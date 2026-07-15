@@ -1,0 +1,609 @@
+#!/usr/bin/env bash
+#
+# nagsly — a continuous, dismiss-to-stop meeting alarm for macOS.
+#
+# One binary, git-style subcommands. Core owns a per-source JSON event store
+# (~/.config/nagsly/events.d/*.json) and an alarm engine; it knows nothing about
+# any calendar. Calendar sources are plugins (nagsly-fetch-<name> on PATH) that
+# populate events; core just stores and arms them.
+#
+# The alarm mechanic (proven in the prototype, preserved here): a coarse launchd
+# poll (every 300s) does NOT fire the alarm — it finds the next meeting and, per
+# enabled mode, spawns `nagsly fire <mode> <fire_epoch> ...` DETACHED. The fire
+# process sleeps to the exact second, then fires. That makes firing
+# second-accurate regardless of poll granularity. Re-arming an already-armed
+# (mode, meeting) is an idempotent no-op via a per-mode state file.
+#
+#   Subcommands (user-facing):
+#     add "<title>" <when>    append an event to manual.json
+#     list                    merged view of all sources, next-first
+#     rm <id>                 remove one event from manual.json
+#     clear [source]          wipe a source's file (default: manual)
+#     poll                    launchd entry point: arm fires for the next meeting
+#     status                  read-only "is it working" rollup
+#     next                    dry-run: next meeting + what it WOULD arm
+#     stop                    silence a currently-firing alarm
+#     fetch <name> [args...]  run nagsly-fetch-<name> on PATH, repopulate <name>.json
+#
+#   Internal (not user-facing, dispatched from the same binary):
+#     fire <mode> <epoch> ... what the poller spawns detached
+#     build <source>          normalize raw source JSON (stdin) -> canonical
+#                             events.d/<source>.json (used by plugins)
+
+set -euo pipefail
+
+export ASDF_SUPERDB_VERSION="${ASDF_SUPERDB_VERSION:-0.3.0}"
+
+LABEL="com.chrismo.nagsly"
+
+# --- config & paths ----------------------------------------------------------
+# NAGSLY_DIR overridable for tests (isolated $TMPDIR per test); NAGSLY_NOW pins
+# "now" for deterministic epoch/HH:MM. Mirrors the prototype's MEETING_ALARM_*.
+CONFIG_DIR="${NAGSLY_DIR:-$HOME/.config/nagsly}"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+EVENTS_D="$CONFIG_DIR/events.d"
+STATE_DIR="$CONFIG_DIR/state"
+LOG_FILE="$CONFIG_DIR/nagsly.log"
+
+# Read a config knob from config.json (JSON — Chris wants JSON for all config),
+# falling back to a default. Env of the same UPPER_SNAKE name wins over JSON so
+# tests and one-offs can override without touching the file.
+config() {
+  local key="$1" default="$2" env_name val
+  env_name="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+  # Indirect env lookup: if NAGSLY_<KEY> or <KEY> is set in the environment, use it.
+  if [[ -n "${!env_name:-}" ]]; then printf '%s' "${!env_name}"; return; fi
+  if [[ -f "$CONFIG_FILE" ]]; then
+    val="$(super -f line -c "coalesce($key, error(\"missing\"))" "$CONFIG_FILE" 2>/dev/null || true)"
+    if [[ -n "$val" && "$val" != "error"* ]]; then printf '%s' "$val"; return; fi
+  fi
+  printf '%s' "$default"
+}
+
+TOAST_LEAD="$(config toast_lead 600)"       # quiet "alarm is live" toast at T-10m
+ALARM_LEAD="$(config alarm_lead 60)"        # continuous loud alarm at T-60s
+TOAST_ENABLED="$(config toast_enabled 1)"
+ALARM_ENABLED="$(config alarm_enabled 1)"
+# Don't arm a fire until within this many seconds of firing. Must exceed the
+# launchd poll interval (300s) so no fire is skipped between polls.
+ARM_WINDOW="$(config arm_window 360)"
+SOUND_FILE="$(config sound_file /System/Library/Sounds/Sosumi.aiff)"
+ALARM_TIMEOUT="$(config alarm_timeout 90)"  # hard stop for the loop if never dismissed
+
+# Guard against a silently-broken config: if config.json EXISTS but doesn't
+# parse, every knob above silently fell back to its default (which could e.g.
+# leave the alarm on default settings you thought you'd changed). A malformed
+# config for a meeting alarm is worth a loud warning, not a silent default.
+config_valid() { [[ ! -f "$CONFIG_FILE" ]] || super -f line -c 'count()' "$CONFIG_FILE" >/dev/null 2>&1; }
+if ! config_valid; then
+  printf 'nagsly: WARNING — %s is unreadable/invalid; using defaults for all knobs.\n' "$CONFIG_FILE" >&2
+fi
+
+now() {
+  local n="${NAGSLY_NOW:-}"
+  [[ "$n" =~ ^[0-9]+$ ]] && { printf '%s' "$n"; return; }
+  date +%s
+}
+
+log() { printf '%s %s\n' "$(date -r "$(now)" '+%F %T')" "$*" >> "$LOG_FILE"; }
+
+# Humanize a positive second count as a compact age/eta ("3m", "4h", "2d").
+humanize() {
+  local s="$1"
+  if   (( s < 90 ));     then echo "${s}s"
+  elif (( s < 5400 ));   then echo "$(( (s + 30) / 60 ))m"
+  elif (( s < 172800 )); then echo "$(( (s + 1800) / 3600 ))h"
+  else                        echo "$(( (s + 43200) / 86400 ))d"
+  fi
+}
+
+die() { echo "nagsly: $*" >&2; exit 1; }
+
+# --- event store -------------------------------------------------------------
+
+# Emit the merged, epoch-derived, past-filtered, ascending-sorted event stream
+# (JSON-lines) from ALL events.d/*.json. Core derives epoch + local HH:MM from
+# each event's `start` (ISO-with-offset) at READ time — never pre-frozen — so it
+# stays timezone-honest. `unnest this` flattens each file's JSON array; -dynamic
+# tolerates heterogeneous/empty files. This past-filter is authoritative: a
+# plugin also drops past events at fetch time, but files go stale between
+# fetches, so core filters again here.
+# TSV columns: epoch \t hhmm \t source \t id \t title  (title last: it may hold
+# spaces). Built via an f-string join with `-f line`, NOT `-f tsv`: the TSV
+# writer CSV-escapes any field containing a quote ("Say ""hi"""), which corrupts
+# titles; the f-string emits raw values. `replace(title,"\t"," ")` guards the
+# one thing that WOULD break the join — a literal tab inside a title.
+# Returns 0 with the TSV on stdout on success (including a legitimately empty
+# feed); returns NONZERO if the SuperDB query itself fails (bad file, version
+# mismatch, ...). This distinction matters: for a meeting alarm, a query error
+# that silently looked like "no meetings" would mean the alarm quietly never
+# fires. Callers MUST treat nonzero as an error, not an empty calendar.
+read_events() {
+  shopt -s nullglob
+  local files=("$EVENTS_D"/*.json)
+  shopt -u nullglob
+  (( ${#files[@]} == 0 )) && return 0
+  local err rc
+  err="$(mktemp)"
+  super -dynamic -f line -c '
+    const NOW = '"$(now)"'
+    unnest this
+    | where is(start, <string>)
+    | put epoch := cast(cast(start, <time>), <int64>) / 1000000000
+    | where epoch > NOW
+    | put _t := replace(title, "\t", " ")
+    | sort epoch
+    | values f"{epoch}\t{start[11:16]}\t{source}\t{id}\t{_t}"
+  ' "${files[@]}" 2>"$err"
+  rc=$?
+  if (( rc != 0 )); then
+    log "ERROR reading events (super rc=$rc): $(tr '\n' ' ' < "$err")"
+    rm -f "$err"
+    return "$rc"
+  fi
+  rm -f "$err"
+  return 0
+}
+
+# Stable short id for an event: sha256(source|start|title), 12 hex chars. Stable
+# across re-fetches (same source+start+title => same id) so re-fetch never
+# thrashes, and short enough to type as `nagsly rm <id>`.
+event_id() {
+  local source="$1" start="$2" title="$3"
+  printf '%s|%s|%s' "$source" "$start" "$title" | shasum -a 256 | cut -c1-12
+}
+
+# Atomic write of a JSON array to a source file (write tmp, mv). A fetch/edit
+# overwrites its own file wholesale — no merge, no clobbering other sources.
+write_source() {
+  local source="$1" json="$2"
+  mkdir -p "$EVENTS_D"
+  local tmp="$EVENTS_D/.$source.json.tmp.$$"
+  printf '%s\n' "$json" > "$tmp"
+  mv -f "$tmp" "$EVENTS_D/$source.json"
+}
+
+# JSON-escape a string for embedding in a double-quoted JSON value. Only `title`
+# needs this (id/source/start are machine-controlled). Handles the characters
+# that actually occur in calendar titles; control chars below 0x20 beyond
+# tab/newline/cr are vanishingly unlikely and left as-is.
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  printf '"%s"' "$s"
+}
+
+# Assemble a JSON array (the on-disk source-file shape) from `id\tsource\tstart
+# \ttitle` TSV lines on stdin. SuperDB does the filtering/sorting upstream and
+# emits the TSV; final JSON assembly is shell-native so the id (a shell-computed
+# hash — SuperDB 0.3.0 has no hash fn) drops straight in, and titles are escaped
+# via json_escape. Emits `[]` for empty input.
+rows_to_array() {
+  local first=1 id source start title
+  local out="["
+  while IFS=$'\t' read -r id source start title; do
+    [[ -z "$id" ]] && continue
+    (( first )) || out+=","
+    first=0
+    out+=$'\n  {"id":"'"$id"'","source":"'"$source"'","start":"'"$start"'","title":'"$(json_escape "$title")"'}'
+  done
+  (( first )) && { printf '[]'; return; }
+  out+=$'\n]'
+  printf '%s' "$out"
+}
+
+# Read an existing source file back into `id\tsource\tstart\ttitle` TSV lines
+# (empty if the file is absent/empty). The inverse of rows_to_array, so `add`
+# and `rm` can round-trip a file through the shared assembler. f-string join
+# (not `-f tsv`) so quote-bearing titles survive; tabs collapsed to spaces.
+array_to_rows() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  super -dynamic -f line -c '
+    unnest this
+    | put _t := replace(title, "\t", " ")
+    | values f"{id}\t{source}\t{start}\t{_t}"
+  ' "$f" 2>/dev/null || true
+}
+
+# --- SuperDB normalize (shared by plugins via `build`) -----------------------
+# Filter + normalize raw source JSON (an object with an `events` array, the
+# shape gcalcli/MCP emit) to canonical TSV `source\tstart\ttitle`. Reused by the
+# gws plugin (`nagsly-fetch-gws` pipes raw API JSON to `nagsly build gws`) and
+# any other fetcher.
+#
+# Filters (drop the event if ANY is true) — the proven prototype set:
+#   - not timed         (no start.dateTime, i.e. all-day start.date)
+#   - eventType != DEFAULT   (focus / OOO / working-location / birthday)
+#   - status == cancelled
+#   - self attendee declined
+#   - solo hold: I organize it AND no other attendee (keyed on organizer.self,
+#                so a truncated-attendee all-hands organized by someone else
+#                SURVIVES — the regression the prototype caught)
+#   - already started   (epoch <= now)
+#
+# Emits TSV (not JSON) because the id must be hashed in shell (SuperDB 0.3.0 has
+# no hash fn); build() then reads the TSV, prepends the id, and hands it back to
+# SuperDB to re-emit a properly-escaped JSON array.
+normalize_source() {
+  local source="$1"
+  # Emit `source\tstart\ttitle` via an f-string join with `-f line` (NOT `-f
+  # tsv`, whose CSV escaping corrupts quote-bearing titles). Tabs in a title are
+  # replaced with spaces so they can't break the join.
+  super -dynamic -f line -c '
+    const NOW = '"$(now)"'
+    const SOURCE = "'"$source"'"
+    unnest events
+    | where is(start.dateTime, <string>)
+    | where lower(coalesce(eventType, "default")) == "default"
+    | where lower(coalesce(status, "confirmed")) != "cancelled"
+    | put _selfDeclined := len([unnest coalesce(attendees, []) | where coalesce(self, false) and responseStatus == "declined"]) > 0
+    | where not _selfDeclined
+    | put _others := len([unnest coalesce(attendees, []) | where not coalesce(self, false)])
+    | where not (coalesce(organizer.self, false) and _others == 0)
+    | put epoch := cast(cast(start.dateTime, <time>), <int64>) / 1000000000
+    | where epoch > NOW
+    | put _t := replace(coalesce(summary, "(no title)"), "\t", " ")
+    | sort start
+    | values f"{SOURCE}\t{start.dateTime}\t{_t}"
+  ' -
+}
+
+# =============================================================================
+# Subcommands
+# =============================================================================
+
+cmd_build() {
+  local source="${1:?build: source name required}"
+  # Raw source JSON on stdin -> canonical events.d/<source>.json (wholesale).
+  # normalize -> TSV (source\tstart\ttitle), shell adds the id column, then
+  # rows_to_array assembles the JSON array.
+  local tsv rows="" count=0
+  tsv="$(cat | normalize_source "$source")"
+  local s start title id
+  while IFS=$'\t' read -r s start title; do
+    [[ -z "$s" ]] && continue
+    id="$(event_id "$s" "$start" "$title")"
+    rows+="$id"$'\t'"$s"$'\t'"$start"$'\t'"$title"$'\n'
+    count=$(( count + 1 ))
+  done <<< "$tsv"
+  write_source "$source" "$(printf '%s' "$rows" | rows_to_array)"
+  echo "nagsly: wrote $count event(s) to $source.json"
+}
+
+cmd_add() {
+  local title="${1:?add: title required}"
+  local when="${2:?add: <when> required (HH:MM | ISO | \"tomorrow HH:MM\" | +Nm | +Nh)}"
+  local iso
+  iso="$(resolve_when "$when")" || die "could not parse <when>: '$when'"
+  # Reject a stray tab in the title — it would corrupt the TSV round-trip.
+  [[ "$title" == *$'\t'* ]] && die "title may not contain a tab"
+
+  local id; id="$(event_id manual "$iso" "$title")"
+  local manual="$EVENTS_D/manual.json"
+  # Existing rows + the new row, re-assembled into the array (append; core sorts
+  # by epoch at read time, so on-disk order is not load-bearing).
+  local json
+  json="$( { array_to_rows "$manual"; printf '%s\t%s\t%s\t%s\n' "$id" manual "$iso" "$title"; } | rows_to_array)"
+  write_source manual "$json"
+  echo "nagsly: added '$title' @ $iso (id $id)"
+}
+
+# Resolve a <when> token(s) to ISO-8601-with-offset. Accepts the forms the
+# dispatcher passes as a single already-joined string. All relative/time-of-day
+# forms anchor to `now()` via `date -r` — so NAGSLY_NOW makes them deterministic
+# in tests (and they use real time in normal use, where NAGSLY_NOW is unset).
+resolve_when() {
+  local when="$1"
+  local num base; base="$(now)"
+  case "$when" in
+    +*m)   num="${when#+}"; num="${num%m}"; [[ "$num" =~ ^[0-9]+$ ]] || return 1
+           date -r "$base" -v+"${num}"M "+%Y-%m-%dT%H:%M:%S%z" | fix_offset ;;
+    +*h)   num="${when#+}"; num="${num%h}"; [[ "$num" =~ ^[0-9]+$ ]] || return 1
+           date -r "$base" -v+"${num}"H "+%Y-%m-%dT%H:%M:%S%z" | fix_offset ;;
+    tomorrow\ *)
+           local hm="${when#tomorrow }"
+           [[ "$hm" =~ ^[0-9]{1,2}:[0-9]{2}$ ]] || return 1
+           date -r "$base" -v+1d -v"${hm%%:*}"H -v"${hm##*:}"M -v0S "+%Y-%m-%dT%H:%M:%S%z" | fix_offset ;;
+    [0-9][0-9][0-9][0-9]-*)
+           # Full ISO — pass through verbatim (must carry an offset). Checked
+           # BEFORE the HH:MM case, since an ISO string also contains a colon.
+           printf '%s' "$when" ;;
+    [0-9]*:[0-9]*)
+           [[ "$when" =~ ^[0-9]{1,2}:[0-9]{2}$ ]] || return 1
+           date -r "$base" -v"${when%%:*}"H -v"${when##*:}"M -v0S "+%Y-%m-%dT%H:%M:%S%z" | fix_offset ;;
+    *)     return 1 ;;
+  esac
+}
+
+# BSD date emits +0500 (no colon); ISO-with-offset wants +05:00. Insert the
+# colon so `start` is a clean RFC3339 string the SuperDB <time> cast accepts.
+fix_offset() { sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'; }
+
+cmd_list() {
+  local rows rc
+  rows="$(read_events)"; rc=$?
+  (( rc != 0 )) && die "error reading events (see $LOG_FILE)"
+  if [[ -z "$rows" ]]; then echo "no upcoming meetings"; return; fi
+  local n; n="$(now)"
+  local epoch hhmm source id title
+  while IFS=$'\t' read -r epoch hhmm source id title; do
+    [[ -z "$epoch" ]] && continue
+    printf '%s  %s  (in %s)  [%s]  %s\n' "$hhmm" "$title" "$(humanize $(( epoch - n )))" "$source" "$id"
+  done <<< "$rows"
+}
+
+cmd_rm() {
+  local target="${1:?rm: <id> required}"
+  local manual="$EVENTS_D/manual.json"
+  [[ -f "$manual" ]] || die "no manual events to remove"
+  local rows="" id source start title found=0
+  while IFS=$'\t' read -r id source start title; do
+    [[ -z "$id" ]] && continue
+    if [[ "$id" == "$target" ]]; then found=1; continue; fi
+    rows+="$id"$'\t'"$source"$'\t'"$start"$'\t'"$title"$'\n'
+  done < <(array_to_rows "$manual")
+  write_source manual "$(printf '%s' "$rows" | rows_to_array)"
+  if (( found )); then echo "nagsly: removed $target from manual.json"
+  else echo "nagsly: no manual event with id $target"; fi
+}
+
+cmd_clear() {
+  local source="${1:-manual}"
+  local f="$EVENTS_D/$source.json"
+  write_source "$source" "[]"
+  echo "nagsly: cleared $source.json"
+}
+
+cmd_fetch() {
+  local name="${1:?fetch: plugin name required}"; shift
+  local plugin="nagsly-fetch-$name"
+  command -v "$plugin" >/dev/null 2>&1 || die "plugin not found on PATH: $plugin"
+  "$plugin" "$@"
+}
+
+# --- the alarm engine --------------------------------------------------------
+
+# Arm one mode for the next meeting: spawn `nagsly fire` detached, idempotent
+# via a per-mode state file. dry=1 prints what it WOULD do and arms nothing.
+arm_mode() {
+  local mode="$1" lead="$2" epoch="$3" hhmm="$4" title="$5" dry="$6"
+  local fire_at=$(( epoch - lead ))
+  local n; n="$(now)"
+  local state="$STATE_DIR/arm-${mode}-${epoch}"
+
+  # Past the fire time already? Don't fire late.
+  (( fire_at <= n )) && return 0
+  # Not yet within the arm window? Wait for a later poll — avoids holding a
+  # sleeping process hours early and shrinks reschedule/cancel exposure.
+  (( fire_at - n > ARM_WINDOW )) && return 0
+  # Already armed for this (mode, meeting)? Idempotent no-op.
+  [[ -f "$state" ]] && return 0
+
+  if [[ "$dry" == "1" ]]; then
+    echo "WOULD arm $mode for '$title' @ $hhmm — fire at $(date -r "$fire_at" '+%T') (lead ${lead}s)"
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR"
+  # Record the arm BEFORE spawning so a crash mid-spawn doesn't double-arm.
+  printf '%s\t%s\t%s\n' "$epoch" "$hhmm" "$title" > "$state"
+  nohup "$0" fire "$mode" "$fire_at" "$title" "$hhmm" "$state" >/dev/null 2>&1 &
+  local spawn_pid=$!
+  # If the spawn didn't take (e.g. $0 not executable), the fire never runs and
+  # never clears its state file — that (mode, meeting) would be permanently
+  # "armed" and silently never fire. Verify the child is alive; if not, drop the
+  # state so the next poll re-arms.
+  if ! kill -0 "$spawn_pid" 2>/dev/null; then
+    rm -f "$state"
+    log "ERROR: failed to spawn fire for '$title' @ $hhmm — will retry next poll"
+    return 1
+  fi
+  log "armed $mode for '$title' @ $hhmm — fire at $(date -r "$fire_at" '+%T')"
+}
+
+cmd_poll() {
+  local dry="${1:-0}"
+  mkdir -p "$STATE_DIR"
+  local rows rc
+  rows="$(read_events)"; rc=$?
+  if (( rc != 0 )); then
+    # read_events already logged the error. Surface it, do NOT treat as empty.
+    [[ "$dry" == "1" ]] && echo "ERROR reading events (see $LOG_FILE)"
+    return "$rc"
+  fi
+  local nxt; nxt="$(printf '%s' "$rows" | head -n 1)"
+  if [[ -z "$nxt" ]]; then
+    log "checked — no upcoming meetings"
+    [[ "$dry" == "1" ]] && echo "no upcoming meetings"
+    return 0
+  fi
+  local epoch hhmm source id title
+  IFS=$'\t' read -r epoch hhmm source id title <<< "$nxt"
+
+  local note=""
+  [[ "$TOAST_ENABLED" == "1" ]] && { arm_mode toast "$TOAST_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="toast "; }
+  [[ "$ALARM_ENABLED" == "1" ]] && { arm_mode alarm "$ALARM_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="alarm "; }
+
+  log "checked — next: '$title' @ $hhmm (modes: ${note:-none})"
+  [[ "$dry" == "1" ]] && echo "next: '$title' @ $hhmm (epoch $epoch)"
+  return 0
+}
+
+cmd_fire() {
+  local mode="${1:?fire: mode required}" fire_epoch="${2:?fire: epoch required}"
+  local title="${3:-meeting}" hhmm="${4:-}"
+  local ALERTER="${ALERTER:-alerter}"
+  # Global (not local): the EXIT trap runs after cmd_fire's locals are out of
+  # scope, so a `local` here would be unbound under `set -u` when cleanup fires.
+  NAGSLY_FIRE_STATE="${5:-}"
+
+  cleanup() { [[ -n "${NAGSLY_FIRE_STATE:-}" && -f "${NAGSLY_FIRE_STATE:-}" ]] && rm -f "$NAGSLY_FIRE_STATE"; return 0; }
+  trap cleanup EXIT
+
+  # Test safety: NAGSLY_DRY_FIRE makes a fire clear its state and exit WITHOUT
+  # sleeping, playing audio, or showing a dialog. The whole bats suite exports
+  # this, so no test can ever produce a runaway looping alarm — even if a fire
+  # is spawned with a fire_epoch in the (real) past, which would otherwise skip
+  # the sleep and fire instantly.
+  if [[ -n "${NAGSLY_DRY_FIRE:-}" ]]; then
+    echo "nagsly: DRY fire $mode for '$title' @ $hhmm (fire_epoch $fire_epoch)"
+    return 0
+  fi
+
+  # Sleep to the exact second (a plain sleep, not launchd's minute granularity).
+  # Uses REAL wall-clock time (not NAGSLY_NOW): a fire is a live future timer.
+  local delay=$(( fire_epoch - $(date +%s) ))
+  (( delay > 0 )) && sleep "$delay"
+
+  case "$mode" in
+    toast)
+      "$ALERTER" --title "⏰ nagsly live" --subtitle "$title" \
+        --message "Coming up at ${hhmm}" --timeout 15 >/dev/null 2>&1 || true
+      ;;
+    alarm)
+      # Continuous afplay loop (afplay does ALL audio — alerter's sound flag is
+      # unreliable; alerter is visual only). Capture the loop PID so the timeout
+      # and the Stop action kill THIS loop.
+      ( while :; do afplay "$SOUND_FILE"; done ) &
+      local loop_pid=$!
+      disown "$loop_pid" 2>/dev/null || true
+      ( sleep "$ALARM_TIMEOUT"; kill "$loop_pid" 2>/dev/null; killall afplay 2>/dev/null ) &
+      local timeout_pid=$!
+      disown "$timeout_pid" 2>/dev/null || true
+      "$ALERTER" --title "⏰ MEETING NOW" --subtitle "$title" \
+        --message "Starts ${hhmm} — click Stop to silence" \
+        --close-label "Stop" --timeout "$ALARM_TIMEOUT" >/dev/null 2>&1 || true
+      kill "$loop_pid" 2>/dev/null || true
+      kill "$timeout_pid" 2>/dev/null || true
+      killall afplay 2>/dev/null || true
+      ;;
+    *) die "fire: unknown mode '$mode'" ;;
+  esac
+}
+
+cmd_stop() {
+  # Kill the alarm-mode fire loop(s) first so they don't respawn afplay (the
+  # loop subshell inherits the parent argv, so pkill -f matches it too), then
+  # silence in-flight playback.
+  pkill -f 'nagsly fire alarm' 2>/dev/null || true
+  killall afplay 2>/dev/null || true
+  echo "nagsly: silenced."
+}
+
+cmd_status() {
+  echo "nagsly status"
+  local n; n="$(now)"
+
+  # poller: query the explicit gui/<uid> domain, NOT `launchctl list` — the
+  # legacy list reflects the CALLER's bootstrap session and false-reports.
+  local loaded
+  if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+    loaded="loaded (launchd)"
+  else
+    loaded="NOT loaded — run ./install.sh"
+  fi
+  local hb
+  if [[ -f "$LOG_FILE" ]]; then
+    local hb_epoch
+    hb_epoch="$(date -j -f "%Y-%m-%d %H:%M:%S" "$(tail -n 1 "$LOG_FILE" | cut -d' ' -f1-2)" "+%s" 2>/dev/null || echo "")"
+    if [[ -n "$hb_epoch" ]]; then hb="last heartbeat $(humanize $(( n - hb_epoch ))) ago"
+    else hb="heartbeat log unreadable"; fi
+  else
+    hb="no heartbeat log yet"
+  fi
+  echo "  poller: $loaded, $hb"
+
+  # feed: meeting count across sources
+  local rows rc count srcs
+  rows="$(read_events)"; rc=$?
+  shopt -s nullglob
+  local files=("$EVENTS_D"/*.json)
+  shopt -u nullglob
+  srcs="${#files[@]}"
+  if (( rc != 0 )); then
+    echo "  feed:   ERROR reading events — see $LOG_FILE"
+    echo "  next:   (unknown — feed unreadable)"
+    return 1
+  fi
+  count="$(printf '%s' "$rows" | grep -c . 2>/dev/null || true)"
+  echo "  feed:   $count meeting(s) across $srcs source(s)"
+
+  # next upcoming
+  local nxt; nxt="$(printf '%s' "$rows" | head -n 1)"
+  if [[ -n "$nxt" ]]; then
+    local epoch hhmm source id title
+    IFS=$'\t' read -r epoch hhmm source id title <<< "$nxt"
+    echo "  next:   '$title' @ $hhmm (in $(humanize $(( epoch - n ))))"
+  else
+    echo "  next:   (none upcoming)"
+  fi
+
+  # armed fires
+  shopt -s nullglob
+  local armed=("$STATE_DIR"/arm-*)
+  shopt -u nullglob
+  if (( ${#armed[@]} > 0 )); then
+    echo "  armed:  ${#armed[@]} fire(s) pending:"
+    local a
+    for a in "${armed[@]}"; do
+      local _ae ah at
+      IFS=$'\t' read -r _ae ah at < "$a"
+      echo "            $(basename "$a" | sed -E 's/^arm-([a-z]+)-.*/\1/') → '$at' @ $ah"
+    done
+  else
+    echo "  armed:  (none — fires arm only within their lead window)"
+  fi
+
+  # mode toggles
+  local t_on a_on
+  t_on=$([[ "$TOAST_ENABLED" == "1" ]] && echo "on" || echo "off")
+  a_on=$([[ "$ALARM_ENABLED" == "1" ]] && echo "on" || echo "off")
+  echo "  modes:  toast $t_on (T-$(humanize "$TOAST_LEAD"))   alarm $a_on (T-$(humanize "$ALARM_LEAD"))"
+}
+
+# =============================================================================
+# Dispatch
+# =============================================================================
+
+usage() {
+  cat <<'EOF'
+nagsly — a continuous, dismiss-to-stop meeting alarm for macOS
+
+  nagsly add "<title>" <when>   add an event (manual). <when>:
+                                  HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO
+  nagsly list                   merged view of all sources, next-first
+  nagsly rm <id>                remove one manual event
+  nagsly clear [source]         wipe a source's file (default: manual)
+  nagsly poll                   launchd entry point: arm the next meeting
+  nagsly status                 read-only "is it working" rollup
+  nagsly next                   dry-run: next meeting + what it WOULD arm
+  nagsly stop                   silence a currently-firing alarm
+  nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
+EOF
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    add)    cmd_add "$@" ;;
+    list)   cmd_list ;;
+    rm)     cmd_rm "$@" ;;
+    clear)  cmd_clear "$@" ;;
+    poll)   cmd_poll 0 ;;
+    next)   cmd_poll 1 ;;
+    status) cmd_status ;;
+    stop)   cmd_stop ;;
+    fetch)  cmd_fetch "$@" ;;
+    fire)   cmd_fire "$@" ;;
+    build)  cmd_build "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *)      usage >&2; die "unknown subcommand: $cmd" ;;
+  esac
+}
+
+main "$@"

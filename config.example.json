@@ -1,0 +1,18 @@
+{
+  "_comment": "nagsly config. install.sh seeds this to ~/.config/nagsly/config.json (never overwriting an existing one). All knobs are also overridable via an UPPER_SNAKE env var of the same name (e.g. ALARM_TIMEOUT=4) for tests and one-offs. NO SECRETS live here — the calendar feed is the per-source events.d/*.json files a fetcher writes.",
+
+  "_leads": "seconds before meeting start",
+  "toast_lead": 600,
+  "alarm_lead": 60,
+
+  "_arm_window": "Don't arm a fire until within this many seconds of firing (bounds long sleeps + shrinks reschedule/cancel exposure). Must exceed the launchd poll interval (300s) so nothing is skipped between polls.",
+  "arm_window": 360,
+
+  "_modes": "1=on, 0=off. Run toast-only at first (toast_enabled 1, alarm_enabled 0) to build trust that nagsly sees your meetings, then flip the loud alarm on.",
+  "toast_enabled": 1,
+  "alarm_enabled": 1,
+
+  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds).",
+  "sound_file": "/System/Library/Sounds/Sosumi.aiff",
+  "alarm_timeout": 90
+}
