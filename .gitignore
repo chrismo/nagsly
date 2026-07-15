@@ -1,0 +1,5 @@
+# nagsly runtime lives in ~/.config/nagsly, never in the repo — but ignore any
+# stray local artifacts just in case.
+*.tmp
+.DS_Store
+tmp/

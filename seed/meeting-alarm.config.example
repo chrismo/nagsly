@@ -1,0 +1,30 @@
+# meeting-alarm config — copy to ~/.config/meeting-alarm/config and edit.
+# Sourced by meeting-alarm.sh and meeting-alarm-fire.sh. Shell syntax.
+# NO SECRETS live here — the calendar feed is the flat `events` file that a
+# Claude session refreshes via /ds:meeting-alarm-refresh.
+
+# --- leads (seconds before meeting start) ---
+TOAST_LEAD=600      # quiet "alarm is live" toast at T-10m
+ALARM_LEAD=60       # continuous loud alarm at T-60s
+
+# Don't arm a fire until it's within this many seconds of firing (bounds long
+# sleeps + shrinks reschedule/cancel exposure). Must exceed the launchd poll
+# interval (300s) so nothing is skipped between polls.
+ARM_WINDOW=360
+
+# --- mode toggles (1=on, 0=off) ---
+# Run toast-only at first (TOAST_ENABLED=1, ALARM_ENABLED=0) to build trust
+# that the system sees your meetings, then flip the loud alarm on.
+TOAST_ENABLED=1
+ALARM_ENABLED=1
+
+# --- loud alarm ---
+# Any file afplay can play. Built-ins live in /System/Library/Sounds/*.aiff
+# (Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only.
+SOUND_FILE=/System/Library/Sounds/Sosumi.aiff
+ALARM_TIMEOUT=90    # hard stop for the loop if never dismissed (seconds)
+
+# --- paths (usually leave default) ---
+# EVENTS_FILE="$HOME/.config/meeting-alarm/events"
+# STATE_DIR="$HOME/.config/meeting-alarm/state"
+# LOG_FILE="$HOME/.config/meeting-alarm/meeting-alarm.log"
