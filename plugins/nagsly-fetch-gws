@@ -28,8 +28,26 @@
 
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+nagsly-fetch-gws — Google Calendar feeder for nagsly (via the gws CLI).
+
+Usage:
+  nagsly-fetch-gws [days]     pull the next [days] days (default: 4) into
+                              events.d/gws.json
+  nagsly fetch gws [days]     same, via the nagsly dispatcher
+
+Prereq: gws installed + authed (`gws auth setup` / `gws auth login`, calendar
+read-only scope is enough).
+EOF
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
 DAYS="${1:-4}"
-[[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "nagsly-fetch-gws: days must be an integer" >&2; exit 2; }
+[[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "nagsly-fetch-gws: days must be a non-negative integer (got '$DAYS'); see --help" >&2; exit 2; }
 
 command -v gws     >/dev/null 2>&1 || { echo "nagsly-fetch-gws: gws not found on PATH (see https://github.com/googleworkspace/cli)" >&2; exit 127; }
 command -v nagsly  >/dev/null 2>&1 || { echo "nagsly-fetch-gws: nagsly not found on PATH" >&2; exit 127; }
