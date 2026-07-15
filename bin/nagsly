@@ -34,6 +34,19 @@ set -euo pipefail
 
 export ASDF_SUPERDB_VERSION="${ASDF_SUPERDB_VERSION:-0.3.0}"
 
+# PATH hardening. launchd (and cron) run with a minimal PATH that omits the
+# asdf shims and Homebrew, so `super`/`alerter`/`gws` become "command not
+# found" and every read silently fails to fire. The plist sets an explicit
+# PATH, but a meeting alarm must not depend on how it was invoked — so if a
+# core dep isn't already resolvable, prepend its real home here too. Only adds
+# dirs that exist; asdf shims first so ASDF_SUPERDB_VERSION selects super 0.3.0.
+if ! command -v super >/dev/null 2>&1; then
+  for d in "$HOME/.asdf/shims" "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin; do
+    [[ -d "$d" ]] && PATH="$d:$PATH"
+  done
+  export PATH
+fi
+
 LABEL="com.chrismo.nagsly"
 
 # --- config & paths ----------------------------------------------------------

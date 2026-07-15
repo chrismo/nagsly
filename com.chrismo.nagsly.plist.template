@@ -24,6 +24,18 @@
         <string>poll</string>
     </array>
 
+    <!-- launchd runs with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that
+         does NOT include the asdf shims or Homebrew, so the poller can't find
+         super / alerter / gws and every read fails with `command not found`
+         (a silent no-fire). Give it an explicit PATH covering the deps' real
+         homes. asdf shims first so `super` resolves (the binary exports
+         ASDF_SUPERDB_VERSION=0.3.0, which the shim honors). -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.asdf/shims:__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
     <!-- Poll every 5 minutes. Granularity does NOT affect firing precision: the
          poller arms a second-accurate detached sleep, not the fire itself. -->
     <key>StartInterval</key>
