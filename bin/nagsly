@@ -338,6 +338,23 @@ resolve_when() {
 # colon so `start` is a clean RFC3339 string the SuperDB <time> cast accepts.
 fix_offset() { sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'; }
 
+# Render a YYYY-MM-DD as "today"/"tomorrow" when it is, else the date itself.
+# Compared against the local calendar day derived from now() (honors NAGSLY_NOW
+# + TZ), so it's deterministic in tests. The event's `date` is already its local
+# calendar date (sliced from its own offset), matching the machine tz for your
+# own calendar; a foreign-tz event just shows its real date, which is fine.
+day_label() {
+  local d="$1" n today tomorrow
+  n="$(now)"
+  today="$(date -r "$n" '+%F')"
+  tomorrow="$(date -r "$(( n + 86400 ))" '+%F')"
+  case "$d" in
+    "$today")    echo "today" ;;
+    "$tomorrow") echo "tomorrow" ;;
+    *)           echo "$d" ;;
+  esac
+}
+
 cmd_list() {
   local rows rc
   rows="$(read_events)"; rc=$?
@@ -347,9 +364,10 @@ cmd_list() {
   local epoch date hhmm source id title
   while IFS=$'\t' read -r epoch date hhmm source id title; do
     [[ -z "$epoch" ]] && continue
-    # date | time | until | title | source | id
-    printf '%s  %s  %5s  %s  [%s]  %s\n' \
-      "$date" "$hhmm" "$(humanize $(( epoch - n )))" "$title" "$source" "$id"
+    # day | time | until | title | source | id  (day = today/tomorrow/YYYY-MM-DD,
+    # left-padded to the date width so columns stay aligned)
+    printf '%-10s  %s  %5s  %s  [%s]  %s\n' \
+      "$(day_label "$date")" "$hhmm" "$(humanize $(( epoch - n )))" "$title" "$source" "$id"
   done <<< "$rows"
 }
 

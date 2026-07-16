@@ -50,14 +50,24 @@ build_gws() {
   [[ "${lines[3]}" == *"All hands - Q3 kickoff"* ]]
 }
 
-@test "renders date + HH:MM in local time and carries the title" {
+@test "renders day + HH:MM in local time and carries the title" {
   build_gws
   run "$BIN" list
-  # columns: date  time  until  title  [source]  id
-  [[ "${lines[0]}" == "2026-07-14  15:30  "*"Eng managers chat"* ]]
+  # columns: day  time  until  title  [source]  id  (NAGSLY_NOW = 2026-07-13, so
+  # 07-14 renders as "tomorrow"; later days stay as YYYY-MM-DD)
+  [[ "${lines[0]}" == "tomorrow"*"15:30  "*"Eng managers chat"* ]]
   [[ "${lines[1]}" == "2026-07-15  10:00  "*"Engineering Forum"* ]]
   [[ "${lines[2]}" == "2026-07-15  12:00  "*"Change Management"* ]]
   [[ "${lines[3]}" == "2026-07-16  10:00  "*"All hands - Q3 kickoff"* ]]
+}
+
+@test "list labels today and tomorrow" {
+  # A manual event today (NAGSLY_NOW = 2026-07-13 22:33) and one tomorrow.
+  "$BIN" add "Today evt" "23:30"                       # 07-13, later today
+  "$BIN" add "Tomorrow evt" "tomorrow 09:00"           # 07-14
+  run "$BIN" list
+  [[ "$output" == *"today"*"Today evt"* ]]
+  [[ "$output" == *"tomorrow"*"Tomorrow evt"* ]]
 }
 
 @test "keeps a company all-hands whose attendee list is truncated to just self" {
