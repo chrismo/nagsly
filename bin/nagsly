@@ -371,10 +371,46 @@ cmd_clear() {
   echo "nagsly: cleared $source.json"
 }
 
+# List the fetch plugins on PATH by their short name (the `<name>` in
+# `nagsly fetch <name>`), one per line, deduped and sorted. Empty if none.
+list_fetch_plugins() {
+  local dir p base
+  while IFS=: read -rd: dir; do
+    [[ -d "$dir" ]] || continue
+    for p in "$dir"/nagsly-fetch-*; do
+      [[ -x "$p" && -f "$p" ]] || continue
+      base="$(basename "$p")"
+      printf '%s\n' "${base#nagsly-fetch-}"
+    done
+  done <<< "$PATH:"
+  # (the trailing ':' makes the last PATH entry a complete field for read -d:)
+}
+
+# Print available plugins as a friendly hint (to the given stream, default stderr).
+fetch_hint() {
+  local plugins; plugins="$(list_fetch_plugins | sort -u)"
+  if [[ -n "$plugins" ]]; then
+    echo "available plugins: $(printf '%s' "$plugins" | paste -sd', ' -)"
+    echo "usage: nagsly fetch <name> [args...]   (e.g. nagsly fetch $(printf '%s' "$plugins" | head -n1))"
+  else
+    echo "no nagsly-fetch-* plugins found on PATH."
+    echo "install one (e.g. the bundled gws feeder) so \`nagsly fetch gws\` works."
+  fi
+}
+
 cmd_fetch() {
-  local name="${1:?fetch: plugin name required}"; shift
+  if [[ -z "${1:-}" ]]; then
+    echo "nagsly: fetch needs a plugin name." >&2
+    fetch_hint >&2
+    return 2
+  fi
+  local name="$1"; shift
   local plugin="nagsly-fetch-$name"
-  command -v "$plugin" >/dev/null 2>&1 || die "plugin not found on PATH: $plugin"
+  if ! command -v "$plugin" >/dev/null 2>&1; then
+    echo "nagsly: plugin not found on PATH: $plugin" >&2
+    fetch_hint >&2
+    return 2
+  fi
   "$plugin" "$@"
 }
 

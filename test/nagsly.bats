@@ -357,8 +357,26 @@ EOF
   [[ "$output" == *"All hands - Q3 kickoff"* ]]
 }
 
-@test "fetch fails cleanly when the plugin is not on PATH" {
-  run "$BIN" fetch nonexistent-source
+@test "fetch fails cleanly when the plugin is not on PATH, and lists options" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\n' > "$pdir/nagsly-fetch-fake"; chmod +x "$pdir/nagsly-fetch-fake"
+  PATH="$pdir:$PATH" run "$BIN" fetch nonexistent-source
   [ "$status" -ne 0 ]
   [[ "$output" == *"plugin not found"* ]]
+  [[ "$output" == *"available plugins:"* ]]
+  [[ "$output" == *"fake"* ]]      # discovered plugin is listed
 }
+
+@test "fetch with no plugin name lists the available plugins" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\n' > "$pdir/nagsly-fetch-fake"; chmod +x "$pdir/nagsly-fetch-fake"
+  PATH="$pdir:$PATH" run "$BIN" fetch
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"fetch needs a plugin name"* ]]
+  [[ "$output" == *"fake"* ]]
+}
+
+# (No test for the "zero plugins installed" hint: the binary's PATH self-heal
+# reintroduces ~/.local/bin — where the real nagsly-fetch-gws lives — so a test
+# can't reliably present an empty plugin set. The hint path is exercised by hand
+# on a machine with nothing installed.)
