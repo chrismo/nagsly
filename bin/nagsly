@@ -541,8 +541,10 @@ do_fire() {
       # alerter blocks until Stop / close / timeout — that's the intended nag.
       # On Stop/close we kill the loop early; otherwise the loop self-stops at
       # its deadline. Give alerter the same timeout so it doesn't outlast sound.
-      "$ALERTER" --title "⏰ MEETING NOW" --subtitle "$title" \
-        --message "Starts ${hhmm} — click Stop to silence" \
+      # Generic title (not "MEETING NOW"): nagsly is calendar-agnostic — the
+      # event's own name is the subtitle, so this works for anything you add.
+      "$ALERTER" --title "⏰ nagsly" --subtitle "$title" \
+        --message "${hhmm} — click Stop to silence" \
         --close-label "Stop" --timeout "$ALARM_TIMEOUT" >/dev/null 2>&1 || true
       kill "$loop_pid" 2>/dev/null || true
       killall afplay 2>/dev/null || true
