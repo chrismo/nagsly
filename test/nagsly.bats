@@ -53,21 +53,23 @@ build_gws() {
 @test "renders day + HH:MM in local time and carries the title" {
   build_gws
   run "$BIN" list
-  # columns: day  time  until  title  [source]  id  (NAGSLY_NOW = 2026-07-13, so
-  # 07-14 renders as "tomorrow"; later days stay as YYYY-MM-DD)
-  [[ "${lines[0]}" == "tomorrow"*"15:30  "*"Eng managers chat"* ]]
-  [[ "${lines[1]}" == "2026-07-15  10:00  "*"Engineering Forum"* ]]
-  [[ "${lines[2]}" == "2026-07-15  12:00  "*"Change Management"* ]]
-  [[ "${lines[3]}" == "2026-07-16  10:00  "*"All hands - Q3 kickoff"* ]]
+  # columns: day  time  until  date  title  [source]  id  (NAGSLY_NOW =
+  # 2026-07-13, so 07-14 is "tomorrow", later days show the weekday abbrev)
+  [[ "${lines[0]}" == "tomorrow"*"15:30  "*"2026-07-14  Eng managers chat"* ]]
+  [[ "${lines[1]}" == "Wed"*"10:00  "*"2026-07-15  Engineering Forum"* ]]
+  [[ "${lines[2]}" == "Wed"*"12:00  "*"2026-07-15  Change Management"* ]]
+  [[ "${lines[3]}" == "Thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]]
 }
 
-@test "list labels today and tomorrow" {
-  # A manual event today (NAGSLY_NOW = 2026-07-13 22:33) and one tomorrow.
+@test "list labels today, tomorrow, and weekday" {
+  # NAGSLY_NOW = 2026-07-13 (Sun) 22:33.
   "$BIN" add "Today evt" "23:30"                       # 07-13, later today
-  "$BIN" add "Tomorrow evt" "tomorrow 09:00"           # 07-14
+  "$BIN" add "Tomorrow evt" "tomorrow 09:00"           # 07-14 (Mon)
+  "$BIN" add "Later evt" "2026-07-16T09:00:00-05:00"   # 07-16 (Thu)
   run "$BIN" list
   [[ "$output" == *"today"*"Today evt"* ]]
   [[ "$output" == *"tomorrow"*"Tomorrow evt"* ]]
+  [[ "$output" == *"Thu"*"Later evt"* ]]
 }
 
 @test "keeps a company all-hands whose attendee list is truncated to just self" {

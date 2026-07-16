@@ -338,11 +338,11 @@ resolve_when() {
 # colon so `start` is a clean RFC3339 string the SuperDB <time> cast accepts.
 fix_offset() { sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'; }
 
-# Render a YYYY-MM-DD as "today"/"tomorrow" when it is, else the date itself.
-# Compared against the local calendar day derived from now() (honors NAGSLY_NOW
-# + TZ), so it's deterministic in tests. The event's `date` is already its local
-# calendar date (sliced from its own offset), matching the machine tz for your
-# own calendar; a foreign-tz event just shows its real date, which is fine.
+# Render a YYYY-MM-DD as "today"/"tomorrow", else the weekday abbrev ("Thu").
+# today/tomorrow are compared against the local calendar day derived from now()
+# (honors NAGSLY_NOW + TZ), so it's deterministic in tests. The event's `date` is
+# already its local calendar date (sliced from its own offset), matching the
+# machine tz for your own calendar. The raw date still shows in its own column.
 day_label() {
   local d="$1" n today tomorrow
   n="$(now)"
@@ -351,7 +351,7 @@ day_label() {
   case "$d" in
     "$today")    echo "today" ;;
     "$tomorrow") echo "tomorrow" ;;
-    *)           echo "$d" ;;
+    *)           date -j -f "%Y-%m-%d" "$d" '+%a' 2>/dev/null || echo "$d" ;;
   esac
 }
 
@@ -364,10 +364,11 @@ cmd_list() {
   local epoch date hhmm source id title
   while IFS=$'\t' read -r epoch date hhmm source id title; do
     [[ -z "$epoch" ]] && continue
-    # day | time | until | title | source | id  (day = today/tomorrow/YYYY-MM-DD,
-    # left-padded to the date width so columns stay aligned)
-    printf '%-10s  %s  %5s  %s  [%s]  %s\n' \
-      "$(day_label "$date")" "$hhmm" "$(humanize $(( epoch - n )))" "$title" "$source" "$id"
+    # day | time | until | date | title | [source] | id
+    # day = today/tomorrow/weekday, left-padded so columns stay aligned.
+    printf '%-9s %s  %5s  %s  %s  [%s]  %s\n' \
+      "$(day_label "$date")" "$hhmm" "$(humanize $(( epoch - n )))" \
+      "$date" "$title" "$source" "$id"
   done <<< "$rows"
 }
 
