@@ -340,6 +340,32 @@ EOF
   [[ "$output" == *"feed:"* ]]
 }
 
+# ── logs ─────────────────────────────────────────────────────────────────────
+
+@test "logs summarizes heartbeats and shows activity (fires/errors), not the spam" {
+  mkdir -p "$NAGSLY_DIR"
+  cat > "$NAGSLY_DIR/nagsly.log" <<'LOG'
+2026-07-16 09:40:00 checked — next: 'X' @ 10:00 (modes: toast alarm )
+2026-07-16 09:41:00 checked — next: 'X' @ 10:00 (modes: toast alarm )
+2026-07-16 09:50:29 firing toast for 'X' @ 10:00
+2026-07-16 09:42:00 ERROR reading events (super rc=127): boom
+LOG
+  run "$BIN" logs
+  [ "$status" -eq 0 ]
+  # heartbeat summary line (count + span), heartbeats themselves suppressed
+  [[ "$output" == *"2 heartbeats"* ]]
+  [[ "$output" != *"modes: toast alarm"* ]]   # the chatty 'checked' lines are hidden
+  # activity — good AND bad — shown
+  [[ "$output" == *"firing toast for 'X'"* ]]
+  [[ "$output" == *"ERROR reading events"* ]]
+}
+
+@test "logs is graceful when no log exists yet" {
+  run "$BIN" logs
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no log yet"* ]]
+}
+
 # ── plugin dispatch ──────────────────────────────────────────────────────────
 
 @test "fetch runs a plugin found on PATH and repopulates its source file" {

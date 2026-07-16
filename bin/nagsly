@@ -353,6 +353,46 @@ cmd_list() {
   done <<< "$rows"
 }
 
+# `nagsly logs` — the heartbeat log made legible. The poller writes one
+# `checked —` heartbeat per minute, which would bury the signal, so we suppress
+# those and instead print a one-line summary (count + span + freshness), then
+# the actual ACTIVITY lines (firing / armed / ERROR — the good and the bad).
+#   nagsly logs        show heartbeat summary + all activity lines
+#   nagsly logs -f     follow live (raw tail -f of the full log, Ctrl-C to stop)
+cmd_logs() {
+  if [[ "${1:-}" == "-f" || "${1:-}" == "--follow" ]]; then
+    [[ -f "$LOG_FILE" ]] || die "no log yet at $LOG_FILE"
+    exec tail -f "$LOG_FILE"
+  fi
+  if [[ ! -f "$LOG_FILE" ]]; then echo "no log yet at $LOG_FILE"; return 0; fi
+
+  # Heartbeat summary: count of `checked —` lines + first/last timestamp + age.
+  local hb_count first last last_epoch n
+  hb_count="$(grep -c 'checked —' "$LOG_FILE" 2>/dev/null || true)"
+  if (( hb_count > 0 )); then
+    first="$(grep 'checked —' "$LOG_FILE" | head -n 1 | cut -d' ' -f1-2)"
+    last="$(grep 'checked —' "$LOG_FILE" | tail -n 1 | cut -d' ' -f1-2)"
+    n="$(now)"
+    last_epoch="$(date -j -f "%Y-%m-%d %H:%M:%S" "$last" "+%s" 2>/dev/null || echo "")"
+    if [[ -n "$last_epoch" ]]; then
+      echo "($hb_count heartbeats $first → $last, last $(humanize $(( n - last_epoch ))) ago)"
+    else
+      echo "($hb_count heartbeats $first → $last)"
+    fi
+  else
+    echo "(no heartbeats logged yet)"
+  fi
+
+  # Activity: everything that ISN'T a routine heartbeat (firing / armed / ERROR).
+  local activity
+  activity="$(grep -v 'checked —' "$LOG_FILE" 2>/dev/null || true)"
+  if [[ -n "$activity" ]]; then
+    printf '%s\n' "$activity"
+  else
+    echo "(no fires or errors logged yet)"
+  fi
+}
+
 cmd_rm() {
   local target="${1:?rm: <id> required}"
   local manual="$EVENTS_D/manual.json"
@@ -522,9 +562,14 @@ do_fire() {
 
   case "$mode" in
     toast)
-      # Backgrounded so the quiet liveness toast never delays the poll.
+      # Sticky: NO --timeout, so the toast persists (lands in Notification
+      # Center) until dismissed, rather than vanishing after N seconds — a
+      # transient toast is easy to miss (that's how it slipped by once).
+      # Backgrounded + disowned so the (now-blocking) alerter never holds the
+      # poll; it exits when dismissed. (A per-toast sticky/timeout config knob
+      # may come later; sticky is the default for now.)
       ( "$ALERTER" --title "⏰ nagsly live" --subtitle "$title" \
-          --message "Coming up at ${hhmm}" --timeout 15 >/dev/null 2>&1 || true ) &
+          --message "Coming up at ${hhmm}" >/dev/null 2>&1 || true ) &
       disown 2>/dev/null || true
       ;;
     alarm)
@@ -652,6 +697,7 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly clear [source]         wipe a source's file (default: manual)
   nagsly poll                   launchd entry point: fire modes due now
   nagsly status                 read-only "is it working" rollup
+  nagsly logs [-f]              recent fires/errors + heartbeat summary (-f: follow)
   nagsly next                   dry-run: next event + what it WOULD fire
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
@@ -668,6 +714,7 @@ main() {
     poll)   cmd_poll 0 ;;
     next)   cmd_poll 1 ;;
     status) cmd_status ;;
+    logs)   cmd_logs "$@" ;;
     stop)   cmd_stop ;;
     fetch)  cmd_fetch "$@" ;;
     build)  cmd_build "$@" ;;
