@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# nagsly — a continuous, dismiss-to-stop meeting alarm for macOS.
+# nagsly — a continuous, dismiss-to-stop alarm for macOS.
 #
 # One binary, git-style subcommands. Core owns a per-source JSON event store
 # (~/.config/nagsly/events.d/*.json) and an alarm engine; it knows nothing about
@@ -24,7 +24,7 @@
 #     clear [source]          wipe a source's file (default: manual)
 #     poll                    launchd entry point: fire modes due for the next meeting
 #     status                  read-only "is it working" rollup
-#     next                    dry-run: next meeting + what it WOULD fire
+#     next                    dry-run: next event + what it WOULD fire
 #     stop                    silence a currently-firing alarm
 #     fetch <name> [args...]  run nagsly-fetch-<name> on PATH, repopulate <name>.json
 #
@@ -340,7 +340,7 @@ cmd_list() {
   local rows rc
   rows="$(read_events)"; rc=$?
   (( rc != 0 )) && die "error reading events (see $LOG_FILE)"
-  if [[ -z "$rows" ]]; then echo "no upcoming meetings"; return; fi
+  if [[ -z "$rows" ]]; then echo "no upcoming events"; return; fi
   local n; n="$(now)"
   local epoch hhmm source id title
   while IFS=$'\t' read -r epoch hhmm source id title; do
@@ -482,8 +482,8 @@ cmd_poll() {
   fi
   local nxt; nxt="$(printf '%s' "$rows" | head -n 1)"
   if [[ -z "$nxt" ]]; then
-    log "checked — no upcoming meetings"
-    [[ "$dry" == "1" ]] && echo "no upcoming meetings"
+    log "checked — no upcoming events"
+    [[ "$dry" == "1" ]] && echo "no upcoming events"
     return 0
   fi
   local epoch hhmm source id title
@@ -598,7 +598,7 @@ cmd_status() {
     return 1
   fi
   count="$(printf '%s' "$rows" | grep -c . 2>/dev/null || true)"
-  echo "  feed:   $count meeting(s) across $srcs source(s)"
+  echo "  feed:   $count event(s) across $srcs source(s)"
 
   # next upcoming
   local nxt; nxt="$(printf '%s' "$rows" | head -n 1)"
@@ -639,7 +639,7 @@ cmd_status() {
 
 usage() {
   cat <<'EOF'
-nagsly — a continuous, dismiss-to-stop meeting alarm for macOS
+nagsly — a continuous, dismiss-to-stop alarm for macOS
 
   nagsly add "<title>" <when>   add an event (manual). <when>:
                                   HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO
@@ -648,7 +648,7 @@ nagsly — a continuous, dismiss-to-stop meeting alarm for macOS
   nagsly clear [source]         wipe a source's file (default: manual)
   nagsly poll                   launchd entry point: fire modes due now
   nagsly status                 read-only "is it working" rollup
-  nagsly next                   dry-run: next meeting + what it WOULD fire
+  nagsly next                   dry-run: next event + what it WOULD fire
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
 EOF
