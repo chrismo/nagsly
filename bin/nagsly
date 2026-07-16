@@ -120,8 +120,10 @@ die() { echo "nagsly: $*" >&2; exit 1; }
 # tolerates heterogeneous/empty files. This past-filter is authoritative: a
 # plugin also drops past events at fetch time, but files go stale between
 # fetches, so core filters again here.
-# TSV columns: epoch \t hhmm \t source \t id \t title  (title last: it may hold
-# spaces). Built via an f-string join with `-f line`, NOT `-f tsv`: the TSV
+# TSV columns: epoch \t date \t hhmm \t source \t id \t title  (title last: it may
+# hold spaces). date = start[0:10] (YYYY-MM-DD), hhmm = start[11:16], both raw
+# ISO slices so local tz/offset is honored with no math. Built via an f-string
+# join with `-f line`, NOT `-f tsv`: the TSV
 # writer CSV-escapes any field containing a quote ("Say ""hi"""), which corrupts
 # titles; the f-string emits raw values. `replace(title,"\t"," ")` guards the
 # one thing that WOULD break the join — a literal tab inside a title.
@@ -145,7 +147,7 @@ read_events() {
     | where epoch > NOW
     | put _t := replace(title, "\t", " ")
     | sort epoch
-    | values f"{epoch}\t{start[11:16]}\t{source}\t{id}\t{_t}"
+    | values f"{epoch}\t{start[0:10]}\t{start[11:16]}\t{source}\t{id}\t{_t}"
   ' "${files[@]}" 2>"$err"
   rc=$?
   if (( rc != 0 )); then
@@ -342,10 +344,12 @@ cmd_list() {
   (( rc != 0 )) && die "error reading events (see $LOG_FILE)"
   if [[ -z "$rows" ]]; then echo "no upcoming events"; return; fi
   local n; n="$(now)"
-  local epoch hhmm source id title
-  while IFS=$'\t' read -r epoch hhmm source id title; do
+  local epoch date hhmm source id title
+  while IFS=$'\t' read -r epoch date hhmm source id title; do
     [[ -z "$epoch" ]] && continue
-    printf '%s  %s  (in %s)  [%s]  %s\n' "$hhmm" "$title" "$(humanize $(( epoch - n )))" "$source" "$id"
+    # date | time | until | title | source | id
+    printf '%s  %s  %5s  %s  [%s]  %s\n' \
+      "$date" "$hhmm" "$(humanize $(( epoch - n )))" "$title" "$source" "$id"
   done <<< "$rows"
 }
 
@@ -486,8 +490,8 @@ cmd_poll() {
     [[ "$dry" == "1" ]] && echo "no upcoming events"
     return 0
   fi
-  local epoch hhmm source id title
-  IFS=$'\t' read -r epoch hhmm source id title <<< "$nxt"
+  local epoch date hhmm source id title
+  IFS=$'\t' read -r epoch date hhmm source id title <<< "$nxt"
 
   local note=""
   [[ "$TOAST_ENABLED" == "1" ]] && { fire_mode toast "$TOAST_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="toast "; }
@@ -603,9 +607,9 @@ cmd_status() {
   # next upcoming
   local nxt; nxt="$(printf '%s' "$rows" | head -n 1)"
   if [[ -n "$nxt" ]]; then
-    local epoch hhmm source id title
-    IFS=$'\t' read -r epoch hhmm source id title <<< "$nxt"
-    echo "  next:   '$title' @ $hhmm (in $(humanize $(( epoch - n ))))"
+    local epoch date hhmm source id title
+    IFS=$'\t' read -r epoch date hhmm source id title <<< "$nxt"
+    echo "  next:   '$title' @ $date $hhmm (in $(humanize $(( epoch - n ))))"
   else
     echo "  next:   (none upcoming)"
   fi

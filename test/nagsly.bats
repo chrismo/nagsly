@@ -50,13 +50,14 @@ build_gws() {
   [[ "${lines[3]}" == *"All hands - Q3 kickoff"* ]]
 }
 
-@test "renders HH:MM in local time and carries the title" {
+@test "renders date + HH:MM in local time and carries the title" {
   build_gws
   run "$BIN" list
-  [[ "${lines[0]}" == "15:30  Eng managers chat"* ]]
-  [[ "${lines[1]}" == "10:00  Engineering Forum"* ]]
-  [[ "${lines[2]}" == "12:00  Change Management"* ]]
-  [[ "${lines[3]}" == "10:00  All hands - Q3 kickoff"* ]]
+  # columns: date  time  until  title  [source]  id
+  [[ "${lines[0]}" == "2026-07-14  15:30  "*"Eng managers chat"* ]]
+  [[ "${lines[1]}" == "2026-07-15  10:00  "*"Engineering Forum"* ]]
+  [[ "${lines[2]}" == "2026-07-15  12:00  "*"Change Management"* ]]
+  [[ "${lines[3]}" == "2026-07-16  10:00  "*"All hands - Q3 kickoff"* ]]
 }
 
 @test "keeps a company all-hands whose attendee list is truncated to just self" {
@@ -102,11 +103,11 @@ build_gws() {
   [ "$status" -ne 0 ]
 }
 
-@test "empty events feed yields no upcoming meetings, exit 0" {
+@test "empty events feed yields no upcoming events, exit 0" {
   printf '{"events":[]}' | "$BIN" build gws
   run "$BIN" list
   [ "$status" -eq 0 ]
-  [[ "$output" == "no upcoming meetings" ]]
+  [[ "$output" == "no upcoming events" ]]
 }
 
 @test "lowercase eventType/status (real API casing) is handled" {
@@ -200,7 +201,7 @@ build_gws() {
   run "$BIN" clear gws
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" == "no upcoming meetings" ]]
+  [[ "$output" == "no upcoming events" ]]
 }
 
 # ── per-source merge ─────────────────────────────────────────────────────────
