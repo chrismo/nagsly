@@ -386,11 +386,16 @@ cmd_logs() {
   if [[ ! -f "$LOG_FILE" ]]; then echo "no log yet at $LOG_FILE"; return 0; fi
 
   # Heartbeat summary: count of `checked —` lines + first/last timestamp + age.
-  local hb_count first last last_epoch n
-  hb_count="$(grep -c 'checked —' "$LOG_FILE" 2>/dev/null || true)"
+  # Slurp the heartbeat lines ONCE into a var, then slice with bash — piping
+  # grep into head/tail would SIGPIPE grep (141) on a big log, and under
+  # `set -o pipefail` that aborts this command before anything prints.
+  local hb hb_count first last last_epoch n
+  hb="$(grep 'checked —' "$LOG_FILE" 2>/dev/null || true)"
+  hb_count=0
+  [[ -n "$hb" ]] && hb_count="$(printf '%s\n' "$hb" | wc -l | tr -d ' ')"
   if (( hb_count > 0 )); then
-    first="$(grep 'checked —' "$LOG_FILE" | head -n 1 | cut -d' ' -f1-2)"
-    last="$(grep 'checked —' "$LOG_FILE" | tail -n 1 | cut -d' ' -f1-2)"
+    first="$(printf '%s' "$hb" | sed -n '1p' | cut -d' ' -f1-2)"
+    last="$(printf '%s' "$hb" | sed -n '$p' | cut -d' ' -f1-2)"
     n="$(now)"
     last_epoch="$(date -j -f "%Y-%m-%d %H:%M:%S" "$last" "+%s" 2>/dev/null || echo "")"
     if [[ -n "$last_epoch" ]]; then
@@ -403,10 +408,12 @@ cmd_logs() {
   fi
 
   # Activity: everything that ISN'T a routine heartbeat (firing / armed / ERROR).
+  # Shown most-recent-first — the log is chronological, so reverse it. `tail -r`
+  # reads a finite printf here (not a streaming grep), so it can't SIGPIPE.
   local activity
   activity="$(grep -v 'checked —' "$LOG_FILE" 2>/dev/null || true)"
   if [[ -n "$activity" ]]; then
-    printf '%s\n' "$activity"
+    printf '%s\n' "$activity" | tail -r
   else
     echo "(no fires or errors logged yet)"
   fi

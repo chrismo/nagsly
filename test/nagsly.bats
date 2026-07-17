@@ -372,6 +372,35 @@ LOG
   [[ "$output" == *"ERROR reading events"* ]]
 }
 
+@test "logs shows most-recent activity first" {
+  mkdir -p "$NAGSLY_DIR"
+  cat > "$NAGSLY_DIR/nagsly.log" <<'LOG'
+2026-07-16 09:00:00 firing alarm for 'OLDER' @ 09:01
+2026-07-16 10:00:00 firing alarm for 'NEWER' @ 10:01
+LOG
+  run "$BIN" logs
+  [ "$status" -eq 0 ]
+  # NEWER must appear before OLDER in the output
+  [[ "$output" == *"NEWER"*"OLDER"* ]]
+}
+
+@test "logs survives a large log (no SIGPIPE from grep|head under pipefail)" {
+  mkdir -p "$NAGSLY_DIR"
+  # A log big enough that grep is still writing when head/tail close the pipe.
+  # Under `set -o pipefail` this makes grep die on SIGPIPE (141) and, without a
+  # guard, aborts cmd_logs before it prints anything.
+  {
+    for i in $(seq 1 5000); do
+      printf "2026-07-16 09:%02d:00 checked — next: 'X' @ 10:00 (modes: toast alarm )\n" $((i % 60))
+    done
+    echo "2026-07-16 09:50:29 firing toast for 'X' @ 10:00"
+  } > "$NAGSLY_DIR/nagsly.log"
+  run "$BIN" logs
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"heartbeats"* ]]
+  [[ "$output" == *"firing toast for 'X'"* ]]
+}
+
 @test "logs is graceful when no log exists yet" {
   run "$BIN" logs
   [ "$status" -eq 0 ]
