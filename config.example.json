@@ -3,7 +3,7 @@
 
   "_leads": "seconds before meeting start",
   "toast_lead": 600,
-  "alarm_lead": 60,
+  "alarm_lead": 120,
 
   "_arm_window": "Don't arm a fire until within this many seconds of firing (bounds long sleeps + shrinks reschedule/cancel exposure). Must exceed the launchd poll interval (60s) so nothing is skipped between polls.",
   "arm_window": 360,

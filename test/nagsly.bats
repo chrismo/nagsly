@@ -250,7 +250,7 @@ seed_meeting() {
 }
 
 @test "next fires the alarm once the meeting is inside the alarm lead" {
-  # 30s out: within the T-60s alarm lead (fire_at is 30s in the past, meeting
+  # 30s out: within the T-2m alarm lead (fire_at is ~90s in the past, meeting
   # still future) -> the alarm mode is due.
   seed_meeting 30
   run "$BIN" next

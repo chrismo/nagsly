@@ -76,7 +76,7 @@ config() {
 }
 
 TOAST_LEAD="$(config toast_lead 600)"       # quiet "alarm is live" toast at T-10m
-ALARM_LEAD="$(config alarm_lead 60)"        # continuous loud alarm at T-60s
+ALARM_LEAD="$(config alarm_lead 120)"       # continuous loud alarm at T-2m
 TOAST_ENABLED="$(config toast_enabled 1)"
 ALARM_ENABLED="$(config alarm_enabled 1)"
 SOUND_FILE="$(config sound_file /System/Library/Sounds/Submarine.aiff)"
