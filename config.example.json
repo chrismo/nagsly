@@ -5,7 +5,7 @@
   "toast_lead": 600,
   "alarm_lead": 60,
 
-  "_arm_window": "Don't arm a fire until within this many seconds of firing (bounds long sleeps + shrinks reschedule/cancel exposure). Must exceed the launchd poll interval (300s) so nothing is skipped between polls.",
+  "_arm_window": "Don't arm a fire until within this many seconds of firing (bounds long sleeps + shrinks reschedule/cancel exposure). Must exceed the launchd poll interval (60s) so nothing is skipped between polls.",
   "arm_window": 360,
 
   "_modes": "1=on, 0=off. Run toast-only at first (toast_enabled 1, alarm_enabled 0) to build trust that nagsly sees your meetings, then flip the loud alarm on.",
