@@ -80,7 +80,7 @@ ALARM_LEAD="$(config alarm_lead 120)"       # continuous loud alarm at T-2m
 TOAST_ENABLED="$(config toast_enabled 1)"
 ALARM_ENABLED="$(config alarm_enabled 1)"
 SOUND_FILE="$(config sound_file /System/Library/Sounds/Submarine.aiff)"
-ALARM_TIMEOUT="$(config alarm_timeout 90)"  # hard stop for the loop if never dismissed
+ALARM_TIMEOUT="$(config alarm_timeout 300)"  # hard stop for the loop if never dismissed
 
 # Guard against a silently-broken config: if config.json EXISTS but doesn't
 # parse, every knob above silently fell back to its default (which could e.g.
