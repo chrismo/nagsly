@@ -24,7 +24,6 @@
 #     clear [source]          wipe a source's file (default: manual)
 #     poll                    launchd entry point: fire modes due for the next meeting
 #     status                  read-only "is it working" rollup
-#     next                    dry-run: next event + what it WOULD fire
 #     stop                    silence a currently-firing alarm
 #     fetch <name> [args...]  run nagsly-fetch-<name> on PATH, repopulate <name>.json
 #
@@ -351,7 +350,8 @@ day_label() {
   case "$d" in
     "$today")    echo "today" ;;
     "$tomorrow") echo "tomorrow" ;;
-    *)           date -j -f "%Y-%m-%d" "$d" '+%a' 2>/dev/null || echo "$d" ;;
+    # Lowercased weekday abbrev ("thu") so it matches the today/tomorrow casing.
+    *)           date -j -f "%Y-%m-%d" "$d" '+%a' 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "$d" ;;
   esac
 }
 
@@ -739,7 +739,6 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly poll                   launchd entry point: fire modes due now
   nagsly status                 read-only "is it working" rollup
   nagsly logs [-f]              recent fires/errors + heartbeat summary (-f: follow)
-  nagsly next                   dry-run: next event + what it WOULD fire
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
 EOF
@@ -753,12 +752,15 @@ main() {
     rm)     cmd_rm "$@" ;;
     clear)  cmd_clear "$@" ;;
     poll)   cmd_poll 0 ;;
-    next)   cmd_poll 1 ;;
     status) cmd_status ;;
     logs)   cmd_logs "$@" ;;
     stop)   cmd_stop ;;
     fetch)  cmd_fetch "$@" ;;
+    # internal, not user-facing (absent from usage): `build` normalizes raw
+    # source JSON for plugins; `next` is poll's dry-run, kept for the test suite
+    # (it drives the fire logic without producing audio).
     build)  cmd_build "$@" ;;
+    next)   cmd_poll 1 ;;
     ""|-h|--help|help) usage ;;
     *)      usage >&2; die "unknown subcommand: $cmd" ;;
   esac

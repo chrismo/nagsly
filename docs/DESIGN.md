@@ -80,7 +80,6 @@ nagsly clear [source]           # wipe a source's file (default: manual)
 # alarm engine (core)
 nagsly poll                     # launchd entry point: arm fires for the next meeting
 nagsly status                   # read-only rollup (see below)
-nagsly next                     # dry-run: next meeting + what it WOULD arm
 nagsly stop                     # silence a currently-firing alarm
 
 # plugins

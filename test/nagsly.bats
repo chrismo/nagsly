@@ -56,9 +56,9 @@ build_gws() {
   # columns: day  time  until  date  title  [source]  id  (NAGSLY_NOW =
   # 2026-07-13, so 07-14 is "tomorrow", later days show the weekday abbrev)
   [[ "${lines[0]}" == "tomorrow"*"15:30  "*"2026-07-14  Eng managers chat"* ]]
-  [[ "${lines[1]}" == "Wed"*"10:00  "*"2026-07-15  Engineering Forum"* ]]
-  [[ "${lines[2]}" == "Wed"*"12:00  "*"2026-07-15  Change Management"* ]]
-  [[ "${lines[3]}" == "Thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]]
+  [[ "${lines[1]}" == "wed"*"10:00  "*"2026-07-15  Engineering Forum"* ]]
+  [[ "${lines[2]}" == "wed"*"12:00  "*"2026-07-15  Change Management"* ]]
+  [[ "${lines[3]}" == "thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]]
 }
 
 @test "list labels today, tomorrow, and weekday" {
@@ -69,7 +69,7 @@ build_gws() {
   run "$BIN" list
   [[ "$output" == *"today"*"Today evt"* ]]
   [[ "$output" == *"tomorrow"*"Tomorrow evt"* ]]
-  [[ "$output" == *"Thu"*"Later evt"* ]]
+  [[ "$output" == *"thu"*"Later evt"* ]]
 }
 
 @test "keeps a company all-hands whose attendee list is truncated to just self" {
