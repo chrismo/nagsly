@@ -559,12 +559,27 @@ cmd_poll() {
   local epoch date hhmm source id title
   IFS=$'\t' read -r epoch date hhmm source id title <<< "$nxt"
 
-  local note=""
-  [[ "$TOAST_ENABLED" == "1" ]] && { fire_mode toast "$TOAST_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="toast "; }
-  [[ "$ALARM_ENABLED" == "1" ]] && { fire_mode alarm "$ALARM_LEAD" "$epoch" "$hhmm" "$title" "$dry"; note+="alarm "; }
+  # Double-booked case: two+ meetings can share the earliest start. rows is
+  # epoch-sorted, so all co-starting meetings are the leading rows with this
+  # epoch. Fire ONCE for the slot (the alarm mode blocks the poll while it
+  # sounds — firing per-meeting would stack blocking alarms back-to-back), but
+  # name EVERY title so you know you're double-booked. Marker is keyed on
+  # (mode, epoch), so one slot = one fire regardless of how many meetings share
+  # it. (Bug this fixes: `head -n 1` fired for only the first-sorting meeting
+  # and left the other silent — hit live.)
+  local co_title="$title" e2 d2 h2 s2 i2 t2
+  while IFS=$'\t' read -r e2 d2 h2 s2 i2 t2; do
+    [[ -z "$e2" || "$e2" == "$epoch" ]] || break
+    [[ "$i2" == "$id" ]] && continue   # skip the first row (already have it)
+    co_title+=" + $t2"
+  done <<< "$rows"
 
-  log "checked — next: '$title' @ $hhmm (modes: ${note:-none})"
-  [[ "$dry" == "1" ]] && echo "next: '$title' @ $hhmm (epoch $epoch)"
+  local note=""
+  [[ "$TOAST_ENABLED" == "1" ]] && { fire_mode toast "$TOAST_LEAD" "$epoch" "$hhmm" "$co_title" "$dry"; note+="toast "; }
+  [[ "$ALARM_ENABLED" == "1" ]] && { fire_mode alarm "$ALARM_LEAD" "$epoch" "$hhmm" "$co_title" "$dry"; note+="alarm "; }
+
+  log "checked — next: '$co_title' @ $hhmm (modes: ${note:-none})"
+  [[ "$dry" == "1" ]] && echo "next: '$co_title' @ $hhmm (epoch $epoch)"
   return 0
 }
 

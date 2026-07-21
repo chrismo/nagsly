@@ -139,6 +139,16 @@ Dedup: a per-`(mode, epoch)` marker `~/.config/nagsly/state/fired-<mode>-<epoch>
 A 60s poll sees the same meeting in-window for many ticks; the marker fires each
 mode exactly once. Markers whose meeting epoch is now past are pruned each poll.
 
+**Double-booked meetings (two+ at the same start).** The poll considers all
+events sharing the earliest in-window start, not just the one that sorts first —
+an earlier `head -n 1` fired for only the first-sorting meeting and left the
+other silent (hit live). Because the alarm mode blocks the poll while it sounds,
+firing per-meeting would stack blocking alarms back-to-back and double the nag;
+instead the slot fires **once** with every co-starting title joined (`"Standup +
+1:1 with Sam"`) so you know you're double-booked. The `(mode, epoch)` marker key
+already means "one fire per time slot", so it needs no change for this — same
+epoch, same marker.
+
 ### Sound is `afplay`, never `alerter` — and the loop is self-bounding
 
 `alerter`'s own sound flag is unreliable (confirmed on this machine — Chris hit it

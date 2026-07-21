@@ -240,6 +240,17 @@ seed_meeting() {
     > "$NAGSLY_DIR/events.d/manual.json"
 }
 
+# Put TWO manual meetings at the SAME start (`secs` after NAGSLY_NOW) — the
+# double-booked case. Distinct ids/titles, identical `start` (so identical epoch).
+seed_double_booked() {
+  local secs="$1" a="${2:-Standup}" b="${3:-1:1 with Sam}"
+  local epoch=$(( NAGSLY_NOW + secs ))
+  local iso
+  iso="$(date -r "$epoch" '+%Y-%m-%dT%H:%M:%S%z' | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
+  printf '[{"id":"dbA","source":"manual","start":"%s","title":"%s"},{"id":"dbB","source":"manual","start":"%s","title":"%s"}]\n' \
+    "$iso" "$a" "$iso" "$b" > "$NAGSLY_DIR/events.d/manual.json"
+}
+
 @test "next fires nothing when the meeting is beyond every mode's lead" {
   # 17h out: even the toast (T-10m) window doesn't open for ~16.8h.
   seed_meeting $(( 17 * 3600 ))
@@ -306,6 +317,32 @@ seed_meeting() {
   seed_meeting 30
   ALARM_ENABLED=0 run "$BIN" next
   [[ "$output" != *"WOULD fire alarm"* ]]
+}
+
+@test "double-booked: both meeting titles are named in a single alarm" {
+  # Two meetings at the SAME start, both inside the alarm lead. The poll must
+  # not silently drop one (the head -n 1 bug): the one alarm fire must name
+  # BOTH titles, so you know you're double-booked. (Chris hit this live: nagged
+  # about one meeting, silent about the other at the same time.)
+  seed_double_booked 30
+  run "$BIN" next
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WOULD fire alarm"* ]]
+  [[ "$output" == *"Standup"* ]]
+  [[ "$output" == *"1:1 with Sam"* ]]
+}
+
+@test "double-booked: one fired-marker per (mode,epoch) covers both meetings" {
+  # Co-starting meetings share an epoch, so one marker per (mode,epoch) means
+  # 'fired once for this slot'. The second poll must not re-fire.
+  seed_double_booked 30
+  run "$BIN" poll
+  [ "$status" -eq 0 ]
+  local epoch=$(( NAGSLY_NOW + 30 ))
+  [ -f "$NAGSLY_DIR/state/fired-alarm-$epoch" ]
+  run "$BIN" poll
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"DRY fire alarm"* ]]   # marker present => no second fire
 }
 
 # ── alarm fire wiring (no real audio) ────────────────────────────────────────
