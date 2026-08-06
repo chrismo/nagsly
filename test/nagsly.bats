@@ -34,11 +34,11 @@ build_gws() {
 
 # ── the SuperDB transform / filter set (ported from the prototype) ───────────
 
-@test "build keeps exactly the four real meetings" {
+@test "build keeps exactly the four real meetings plus the focus block" {
   build_gws
   run "$BIN" list
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 4 ]
+  [ "${#lines[@]}" -eq 5 ]
 }
 
 @test "list is epoch-sorted ascending" {
@@ -47,7 +47,8 @@ build_gws() {
   [[ "${lines[0]}" == *"Eng managers chat"* ]]
   [[ "${lines[1]}" == *"Engineering Forum"* ]]
   [[ "${lines[2]}" == *"Change Management"* ]]
-  [[ "${lines[3]}" == *"All hands - Q3 kickoff"* ]]
+  [[ "${lines[3]}" == *"Focus block"* ]]
+  [[ "${lines[4]}" == *"All hands - Q3 kickoff"* ]]
 }
 
 @test "renders day + HH:MM in local time and carries the title" {
@@ -58,7 +59,8 @@ build_gws() {
   [[ "${lines[0]}" == "tomorrow"*"15:30  "*"2026-07-14  Eng managers chat"* ]]
   [[ "${lines[1]}" == "wed"*"10:00  "*"2026-07-15  Engineering Forum"* ]]
   [[ "${lines[2]}" == "wed"*"12:00  "*"2026-07-15  Change Management"* ]]
-  [[ "${lines[3]}" == "thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]]
+  [[ "${lines[3]}" == "wed"*"17:00  "*"2026-07-15  Focus block"* ]]
+  [[ "${lines[4]}" == "thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]]
 }
 
 @test "list labels today, tomorrow, and weekday" {
@@ -82,26 +84,44 @@ build_gws() {
   [[ "$output" == *"All hands - Q3 kickoff"* ]]
 }
 
-@test "drops declined, all-day, focus, solo, cancelled, and past events" {
+@test "drops declined, all-day, solo, cancelled, and past events" {
   build_gws
   run "$BIN" list
   [[ "$output" != *"declined"* ]]
   [[ "$output" != *"all-day"* ]]
-  [[ "$output" != *"Focus block"* ]]
   [[ "$output" != *"Solo hold"* ]]
   [[ "$output" != *"Cancelled"* ]]
   [[ "$output" != *"Way in the past"* ]]
 }
 
+@test "keeps focus time — it looks exactly like a solo hold but IS the nag" {
+  # A real focus block (verified against the live API) is organized by self with
+  # NO attendees key at all, so it trips the solo-hold filter dead-on. Focus time
+  # must be exempted from that filter, not just from the eventType filter —
+  # either one alone still drops it.
+  build_gws
+  run "$BIN" list
+  [[ "$output" == *"Focus block"* ]]
+}
+
+@test "a cancelled focus block is still dropped" {
+  # Focus time is exempt from the solo-hold rule, NOT from cancellation.
+  build_gws
+  run "$BIN" list
+  [[ "$output" != *"Focus block I declined"* ]]
+}
+
 @test "advancing now past a meeting drops it from list" {
-  # now = 2026-07-15 11:00 CDT: after Eng Forum (10:00) and Eng mgrs (07-14),
-  # so Change Management (07-15 12:00) and All hands (07-16 10:00) survive.
+  # now = 2026-07-15 11:00 CDT: after Eng Forum (10:00) and Eng mgrs (07-14), so
+  # Change Management (07-15 12:00), Focus block (07-15 17:00) and All hands
+  # (07-16 10:00) survive.
   build_gws
   export NAGSLY_NOW=1784131200
   run "$BIN" list
-  [ "${#lines[@]}" -eq 2 ]
+  [ "${#lines[@]}" -eq 3 ]
   [[ "${lines[0]}" == *"Change Management"* ]]
-  [[ "${lines[1]}" == *"All hands - Q3 kickoff"* ]]
+  [[ "${lines[1]}" == *"Focus block"* ]]
+  [[ "${lines[2]}" == *"All hands - Q3 kickoff"* ]]
 }
 
 @test "a corrupt events file errors loudly, not silently as 'no meetings'" {
@@ -123,13 +143,19 @@ build_gws() {
 }
 
 @test "lowercase eventType/status (real API casing) is handled" {
+  # The live API emits "focusTime"; the fixture-era guess was "FOCUS_TIME". Both
+  # must match, hence the lower() in the filter.
   printf '%s' '{"events":[
     {"summary":"Lower","eventType":"default","status":"confirmed","start":{"dateTime":"2026-07-16T10:00:00-05:00"},"attendees":[{"email":"a@x","organizer":true},{"email":"me@x","self":true,"responseStatus":"accepted"}]},
-    {"summary":"FocusLower","eventType":"focusTime","status":"confirmed","start":{"dateTime":"2026-07-16T11:00:00-05:00"}}
+    {"summary":"FocusLower","eventType":"focusTime","status":"confirmed","start":{"dateTime":"2026-07-16T11:00:00-05:00"},"organizer":{"email":"me@x","self":true}},
+    {"summary":"FocusUpper","eventType":"FOCUS_TIME","status":"confirmed","start":{"dateTime":"2026-07-16T12:00:00-05:00"},"organizer":{"email":"me@x","self":true}},
+    {"summary":"OooDrop","eventType":"outOfOffice","status":"confirmed","start":{"dateTime":"2026-07-16T13:00:00-05:00"},"organizer":{"email":"me@x","self":true}}
   ]}' | "$BIN" build gws
   run "$BIN" list
   [[ "$output" == *"Lower"* ]]
-  [[ "$output" != *"FocusLower"* ]]
+  [[ "$output" == *"FocusLower"* ]]
+  [[ "$output" == *"FocusUpper"* ]]
+  [[ "$output" != *"OooDrop"* ]]
 }
 
 # ── event id (stable across re-fetch) ────────────────────────────────────────

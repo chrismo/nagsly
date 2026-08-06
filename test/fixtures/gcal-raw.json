@@ -78,10 +78,20 @@
     },
     {
       "summary": "Focus block",
-      "eventType": "FOCUS_TIME",
+      "eventType": "focusTime",
       "status": "confirmed",
       "start": {"dateTime": "2026-07-15T17:00:00-05:00", "timeZone": "America/Chicago"},
-      "end": {"dateTime": "2026-07-15T18:00:00-05:00", "timeZone": "America/Chicago"}
+      "end": {"dateTime": "2026-07-15T18:00:00-05:00", "timeZone": "America/Chicago"},
+      "organizer": {"email": "chris.morris@dscout.com", "self": true},
+      "focusTimeProperties": {"autoDeclineMode": "declineAllConflictingInvitations", "chatStatus": "doNotDisturb"}
+    },
+    {
+      "summary": "Focus block I declined",
+      "eventType": "focusTime",
+      "status": "cancelled",
+      "start": {"dateTime": "2026-07-15T19:00:00-05:00", "timeZone": "America/Chicago"},
+      "end": {"dateTime": "2026-07-15T20:00:00-05:00", "timeZone": "America/Chicago"},
+      "organizer": {"email": "chris.morris@dscout.com", "self": true}
     },
     {
       "summary": "Cancelled meeting",

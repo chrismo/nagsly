@@ -57,11 +57,14 @@ time_min="$(date "+%Y-%m-%dT%H:%M:%S%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1
 time_max="$(date -v+"${DAYS}"d "+%Y-%m-%dT%H:%M:%S%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
 
 # events.list with singleEvents (server-side recurrence expansion) + eventTypes
-# filter (default only, so focus/OOO/working-location/birthday never come back).
+# filter (default + focusTime, so OOO/working-location/birthday never come back).
+# focusTime is requested because nagsly nags focus blocks too — `nagsly build`
+# still owns the real filtering; this just stops the API dropping them upstream
+# where no downstream filter could ever recover them.
 # --page-all emits NDJSON: one JSON object PER PAGE, each an API response with an
 # `items` array. We merge every page's items into a single {"events":[...]} —
 # the shape `nagsly build` consumes — via SuperDB (collect all items, wrap).
-params='{"calendarId":"primary","singleEvents":true,"orderBy":"startTime","eventTypes":["default"],"timeMin":"'"$time_min"'","timeMax":"'"$time_max"'"}'
+params='{"calendarId":"primary","singleEvents":true,"orderBy":"startTime","eventTypes":["default","focusTime"],"timeMin":"'"$time_min"'","timeMax":"'"$time_max"'"}'
 
 export ASDF_SUPERDB_VERSION="${ASDF_SUPERDB_VERSION:-0.3.0}"
 

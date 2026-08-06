@@ -214,6 +214,8 @@ The **filter set** (proven in `seed/meeting-alarm-build-events.sh`, a SuperDB
 0.3.0 transform — reuse it):
 - timed only (drop all-day)
 - eventType == DEFAULT (drop focus/OOO/working-location/birthday)
+  — **amended 2026-08-06: `focusTime` is now KEPT** (see the note below); only
+  OOO/working-location/birthday are dropped.
 - status != cancelled
 - self attendee not declined
 - **not a solo hold**: drop iff *I* organize it AND no other attendee is listed.
@@ -221,7 +223,33 @@ The **filter set** (proven in `seed/meeting-alarm-build-events.sh`, a SuperDB
   only you when `guestsCanSeeGuests:false`) but is organized by *someone else*, so
   it survives. Keying on `organizer.self` is what distinguishes them. **This was a
   real bug caught in the prototype — preserve the test for it.**
+  — **amended 2026-08-06: focus-time events are EXEMPT from this rule.**
 - drop already-started (epoch <= now)
+
+**Amendment (2026-08-06) — focus time is nagged.** The original spec dropped
+`eventType != DEFAULT` wholesale, which put focus blocks in the same bucket as
+OOO and birthdays. Real usage disagreed: a focus block booked to force an
+unglamorous task (invoice approvals, wedged between back-to-back meetings) is
+*exactly* the thing that gets forgotten — more so than a meeting, because no one
+else is waiting on you and nothing external interrupts you.
+
+Verified against the live API: a focus block carries `eventType: "focusTime"`,
+`organizer.self: true`, and **no `attendees` key at all** — structurally
+indistinguishable from a solo hold. So both the eventType filter *and* the
+solo-hold filter had to change; either alone still drops it.
+
+Scope of the exemption is deliberate: focus time bypasses the eventType and
+solo-hold filters ONLY. Cancelled focus blocks and already-started ones are still
+dropped, same as any event. The gws plugin also had to widen its `eventTypes`
+request to `["default","focusTime"]` — the API was filtering them out upstream,
+where no downstream filter could recover them.
+
+Considered and rejected: a `nagsly` keyword in the event description as a
+per-event opt-in. More flexible (it would cover all-day and
+someone-else's-events too), but ~2–3x the work for flexibility not currently
+needed, and it taxes you at creation time — precisely when you're rushed and
+most likely to forget. If focus blocks later show up that should *not* nag, the
+right move is an opt-*out* marker, not an opt-in.
 
 ### Plugin: the Claude/MCP feeder (lives in work-rig, external)
 

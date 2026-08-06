@@ -231,13 +231,22 @@ array_to_rows() {
 #
 # Filters (drop the event if ANY is true) — the proven prototype set:
 #   - not timed         (no start.dateTime, i.e. all-day start.date)
-#   - eventType != DEFAULT   (focus / OOO / working-location / birthday)
+#   - eventType is neither default nor focusTime  (OOO / working-location /
+#                       birthday). The live API emits "focusTime"; "focus_time"
+#                       is matched too since docs/older payloads use that form.
 #   - status == cancelled
 #   - self attendee declined
 #   - solo hold: I organize it AND no other attendee (keyed on organizer.self,
 #                so a truncated-attendee all-hands organized by someone else
 #                SURVIVES — the regression the prototype caught)
 #   - already started   (epoch <= now)
+#
+# Focus time is EXEMPT from the solo-hold filter. A real focus block (verified
+# against the live API) is organized by self with no `attendees` key at all —
+# structurally identical to a solo hold. That's the point: a solo hold is a
+# placeholder you don't need shouting at you, but focus time is time you
+# deliberately defended and are most likely to squander. Exempting only the
+# solo-hold rule (not cancellation, not the past-filter) is deliberate.
 #
 # Emits TSV (not JSON) because the id must be hashed in shell (SuperDB 0.3.0 has
 # no hash fn); build() then reads the TSV, prepends the id, and hands it back to
@@ -252,12 +261,14 @@ normalize_source() {
     const SOURCE = "'"$source"'"
     unnest events
     | where is(start.dateTime, <string>)
-    | where lower(coalesce(eventType, "default")) == "default"
+    | put _etype := lower(coalesce(eventType, "default"))
+    | put _focus := _etype == "focustime" or _etype == "focus_time"
+    | where _etype == "default" or _focus
     | where lower(coalesce(status, "confirmed")) != "cancelled"
     | put _selfDeclined := len([unnest coalesce(attendees, []) | where coalesce(self, false) and responseStatus == "declined"]) > 0
     | where not _selfDeclined
     | put _others := len([unnest coalesce(attendees, []) | where not coalesce(self, false)])
-    | where not (coalesce(organizer.self, false) and _others == 0)
+    | where _focus or not (coalesce(organizer.self, false) and _others == 0)
     | put epoch := cast(cast(start.dateTime, <time>), <int64>) / 1000000000
     | where epoch > NOW
     | put _t := replace(coalesce(summary, "(no title)"), "\t", " ")

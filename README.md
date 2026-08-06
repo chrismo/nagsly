@@ -69,10 +69,15 @@ nagsly fetch gws 7    # …or N days
 
 `nagsly-fetch-gws` pulls upcoming events via the Google Workspace CLI (JSON, with
 server-side recurrence expansion), and `nagsly build` applies all filtering
-deterministically in SuperDB: timed-only, `eventType == default`, not cancelled,
-not declined, and drops solo holds while **keeping** a company all-hands (keyed
-on `organizer.self`, so a truncated-attendee all-hands organized by someone else
-survives).
+deterministically in SuperDB: timed-only, `eventType` of `default` or
+`focusTime`, not cancelled, not declined, and drops solo holds while **keeping**
+a company all-hands (keyed on `organizer.self`, so a truncated-attendee all-hands
+organized by someone else survives).
+
+Focus time is nagged like any meeting. A focus block is structurally identical to
+a solo hold — organized by you, no attendees — so it is explicitly exempted from
+the solo-hold filter. A hold is a placeholder; focus time is time you defended on
+purpose and are most likely to let slip.
 
 > `gws` is open source (Apache-2.0) but its README notes it is "not an officially
 > supported Google product." Core nagsly has zero calendar dependency — the
