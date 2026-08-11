@@ -122,16 +122,26 @@ this). Concretely:
     `source`/`.` the core `nagsly`; runs standalone. Proves "copyable to another
     repo unchanged."
 
-## DESIGN.md retirement
+## DESIGN.md retirement — DONE (2026-08-11)
 
-`docs/DESIGN.md` was a build-handoff spec; the build is done and has diverged from
-it. Retire it:
-1. **Salvage** the durable decisions/rationale not recoverable from code (why gws
-   over gcalcli/.ics; why inline over detached-fire; SuperDB 0.3.0 idiom gotchas;
-   the all-hands-not-solo-hold bug + why) into **README** — or `specs/` if any
-   genuinely un-built material remains (e.g. the MCP feeder, merge-to-one-file).
-   Triage built vs. un-built during execution.
-2. **Delete** `docs/DESIGN.md`.
+`docs/DESIGN.md` was a build-handoff spec; the build finished and diverged from it
+(it still described `seed/`, `nagsly-fetch-gcalcli`, an internal `fire`
+subcommand, and a 31-test suite). Durable rationale was salvaged into the
+README's **Design notes** section — inline-vs-detached firing, the self-bounding
+loop, launchd gotchas, gws-over-.ics, the focus-time amendment + rejected
+keyword opt-in, the all-hands/solo-hold bug, reschedule exposure, SuperDB 0.3.0
+idioms, and the canonical schema. `docs/DESIGN.md` and the now-empty `docs/` are
+deleted; CLAUDE.md was rewritten to match a built tool.
+
+Dropped as no longer true or not worth carrying: the `seed/` provenance section,
+target-architecture-in-future-tense, the "stay bash" recommendation, the `status`
+output mockup, the four resolved open questions, and the installer
+copy-vs-symlink hedge.
+
+Un-built material that was in DESIGN.md and is NOT in the README: the Claude/MCP
+feeder plugin (lives in work-rig, external, still conceptually one more fetcher)
+and merge-to-one-file. Both remain un-built; the canonical schema's `source`
+field is what keeps merge-to-one-file open.
 
 ## Incidental cleanups (found during exploration; fold in)
 
@@ -170,7 +180,7 @@ it. Retire it:
 - `README.md` — new invocation model (`nagsly-gws`, `auto_fetch`, `--auto`
   contract, `write` vs `build`, "core plugins" pointing at PLUGINS.md); salvaged
   design rationale.
-- `docs/DESIGN.md` — salvage rationale → README (or `specs/`), then delete.
+- ~~`docs/DESIGN.md` — salvage rationale → README, then delete.~~ DONE 2026-08-11.
 
 ## Verification
 
