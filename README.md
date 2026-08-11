@@ -87,8 +87,14 @@ purpose and are most likely to let slip.
 
 `~/.config/nagsly/config.json` (seeded from [`config.example.json`](config.example.json)).
 Knobs: `toast_lead`, `alarm_lead`, `toast_enabled`, `alarm_enabled`, `sound_file`,
-`alarm_timeout`, `arm_window`. Each is also overridable via an `UPPER_SNAKE` env
+`alarm_timeout`, `alarm_gap`. Each is also overridable via an `UPPER_SNAKE` env
 var of the same name.
+
+The alarm repeats its sound until dismissed or until `alarm_timeout`. By default
+(`alarm_gap: 0`) repeats are back-to-back, so the repeat rate is just the sound
+file's own length — Submarine.aiff is short, which makes it insistent. Set
+`alarm_gap` to the seconds of silence you want between repeats (e.g. `5`) for a
+calmer nag.
 
 Storage is all local JSON under `~/.config/nagsly/`; per-source event files live
 in `events.d/`, and a fetch overwrites its own file wholesale.

@@ -161,6 +161,12 @@ mid-alarm. The loop's argv carries a sentinel (`nagsly-alarm-loop`) so
 `nagsly stop` = `pkill -f nagsly-alarm-loop` + `killall afplay` matches the loop
 without killing the poller it runs inside (verified).
 
+`alarm_gap` sets the silence between repeats. At the default `0` the loop is
+back-to-back, so the repeat rate is the sound file's own duration and nothing
+else. The gap sleeps in **1-second slices, re-checking the deadline each slice**,
+so it can never push the loop past `alarm_timeout` — a naive `sleep $gap` would
+overshoot the hard stop by up to a full gap.
+
 ### launchd agent
 
 `StartInterval` 60s + `RunAtLoad`, **NOT** `KeepAlive`. The poller is a
@@ -302,9 +308,9 @@ this tooling (sibling of his day-timeline pipelines).
   state/fired-*       # per-(mode,epoch) "already fired" markers (pruned when past)
   nagsly.log          # heartbeat log
 ```
-Knobs: `toast_lead` (600), `alarm_lead` (60), `toast_enabled`, `alarm_enabled`,
+Knobs: `toast_lead` (600), `alarm_lead` (120), `toast_enabled`, `alarm_enabled`,
 `sound_file` (default `/System/Library/Sounds/Submarine.aiff`), `alarm_timeout`
-(90). All overridable via env for tests (the prototype used `MEETING_ALARM_NOW` +
+(300), `alarm_gap` (0). All overridable via env for tests (the prototype used `MEETING_ALARM_NOW` +
 `MEETING_ALARM_DIR` for deterministic bats — carried here with a `NAGSLY_*`
 prefix; `NAGSLY_DRY_FIRE` makes a fire a silent no-op so no test produces audio).
 (`arm_window` is gone — it belonged to the removed detached-arm model.)

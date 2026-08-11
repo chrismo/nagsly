@@ -5,14 +5,12 @@
   "toast_lead": 600,
   "alarm_lead": 120,
 
-  "_arm_window": "Don't arm a fire until within this many seconds of firing (bounds long sleeps + shrinks reschedule/cancel exposure). Must exceed the launchd poll interval (60s) so nothing is skipped between polls.",
-  "arm_window": 360,
-
   "_modes": "1=on, 0=off. Run toast-only at first (toast_enabled 1, alarm_enabled 0) to build trust that nagsly sees your meetings, then flip the loud alarm on.",
   "toast_enabled": 1,
   "alarm_enabled": 1,
 
-  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Submarine, Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds).",
+  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Submarine, Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds). alarm_gap: seconds of silence between repeats — 0 plays back-to-back (repeat rate = the sound's own length); raise it to make the nag less frantic. The gap never pushes the loop past alarm_timeout.",
   "sound_file": "/System/Library/Sounds/Submarine.aiff",
-  "alarm_timeout": 300
+  "alarm_timeout": 300,
+  "alarm_gap": 0
 }

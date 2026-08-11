@@ -404,6 +404,46 @@ EOF
   # would match unrelated audio the developer may be playing.)
 }
 
+@test "alarm_gap spaces out the loop's repeats" {
+  # Exercise the loop body directly rather than through `poll`: in `poll` the
+  # stub alerter returns instantly, so do_fire kills the loop after one play and
+  # neither the timeout nor the gap is observable. Here a 3s window with a 1s
+  # gap and an instant sound fits ~3 plays; with no gap the same window fits
+  # hundreds. The upper bound is what proves the sleep happened.
+  local stub="$TEST_DIR/stub"; mkdir -p "$stub"
+  cat > "$stub/afplay" <<EOF
+#!/usr/bin/env bash
+echo play >> "$TEST_DIR/afplay.calls"
+EOF
+  chmod +x "$stub/afplay"
+
+  PATH="$stub:$PATH" bash -c '
+    deadline=$(( $(date +%s) + $2 ))
+    while (( $(date +%s) < deadline )); do
+      afplay "$1"
+      for (( i = 0; i < $3; i++ )); do
+        (( $(date +%s) < deadline )) || break
+        sleep 1
+      done
+    done
+  ' tag /System/Library/Sounds/Submarine.aiff 3 1
+
+  local plays; plays="$(wc -l < "$TEST_DIR/afplay.calls" | tr -d ' ')"
+  [ "$plays" -ge 2 ]
+  [ "$plays" -le 5 ]
+}
+
+@test "alarm_gap is read from config and passed to the loop" {
+  # The loop body test above only matters if the binary actually feeds the
+  # configured gap into it. There's no config-dump command, so assert the two
+  # halves of the wiring: the knob is read from config.json, and it's passed as
+  # the loop's 4th arg (the $3 the loop body reads).
+  run grep -q 'ALARM_GAP="\$(config alarm_gap' "$BIN"
+  [ "$status" -eq 0 ]
+  run grep -q '"\$ALARM_LOOP_TAG" "\$SOUND_FILE" "\$ALARM_TIMEOUT" "\$ALARM_GAP"' "$BIN"
+  [ "$status" -eq 0 ]
+}
+
 # ── status readout ───────────────────────────────────────────────────────────
 
 @test "status reports next meeting and mode toggles" {

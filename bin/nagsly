@@ -80,6 +80,7 @@ TOAST_ENABLED="$(config toast_enabled 1)"
 ALARM_ENABLED="$(config alarm_enabled 1)"
 SOUND_FILE="$(config sound_file /System/Library/Sounds/Submarine.aiff)"
 ALARM_TIMEOUT="$(config alarm_timeout 300)"  # hard stop for the loop if never dismissed
+ALARM_GAP="$(config alarm_gap 0)"            # silence between repeats, seconds (0 = back-to-back)
 
 # Guard against a silently-broken config: if config.json EXISTS but doesn't
 # parse, every knob above silently fell back to its default (which could e.g.
@@ -634,10 +635,20 @@ do_fire() {
       # needs no external killer, so it auto-stops even if the poll is reaped
       # mid-alarm. Exec'd via `bash -c ... "$ALARM_LOOP_TAG"` so its argv carries
       # the sentinel and `nagsly stop`'s pkill matches THIS loop, not the poller.
+      # ALARM_GAP inserts silence between repeats (0 = back-to-back, the old
+      # behaviour). The gap sleeps in 1s slices and re-checks the deadline each
+      # slice, so a long gap can't push the loop past ALARM_TIMEOUT — otherwise
+      # a 60s gap would overshoot the hard stop by up to a minute.
       bash -c '
         deadline=$(( $(date +%s) + $2 ))
-        while (( $(date +%s) < deadline )); do afplay "$1"; done
-      ' "$ALARM_LOOP_TAG" "$SOUND_FILE" "$ALARM_TIMEOUT" &
+        while (( $(date +%s) < deadline )); do
+          afplay "$1"
+          for (( i = 0; i < $3; i++ )); do
+            (( $(date +%s) < deadline )) || break
+            sleep 1
+          done
+        done
+      ' "$ALARM_LOOP_TAG" "$SOUND_FILE" "$ALARM_TIMEOUT" "$ALARM_GAP" &
       local loop_pid=$!
       # alerter blocks until Stop / close / timeout — that's the intended nag.
       # On Stop/close we kill the loop early; otherwise the loop self-stops at
