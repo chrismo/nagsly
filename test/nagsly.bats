@@ -433,6 +433,32 @@ EOF
   [ "$plays" -le 5 ]
 }
 
+@test "killing the alarm loop is silent (no 'Terminated' on stderr)" {
+  # Regression: the alarm loop is backgrounded and killed when alerter returns.
+  # Without a `disown`, bash's job reaper prints "Terminated: 15 bash -c ..." to
+  # the poll's stderr — noise in the launchd log, and it leaks the whole loop
+  # body. `kill 2>/dev/null` does NOT suppress it (the notice is the shell's, not
+  # kill's). Surfaced when alarm_gap landed: the loop now sits in `sleep`, so the
+  # kill lands mid-sleep rather than inside afplay.
+  local stub="$TEST_DIR/stub"; mkdir -p "$stub"
+  cat > "$stub/afplay" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  cat > "$stub/alerter" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$stub/afplay" "$stub/alerter"
+
+  seed_meeting 30
+  run env -u NAGSLY_DRY_FIRE PATH="$stub:$PATH" ALERTER=alerter \
+    ALARM_TIMEOUT=5 ALARM_GAP=3 TOAST_ENABLED=0 "$BIN" poll
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Terminated"* ]]
+  [[ "$output" != *"deadline"* ]]   # the leaked loop body
+}
+
 @test "alarm_gap is read from config and passed to the loop" {
   # The loop body test above only matters if the binary actually feeds the
   # configured gap into it. There's no config-dump command, so assert the two

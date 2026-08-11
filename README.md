@@ -90,11 +90,12 @@ Knobs: `toast_lead`, `alarm_lead`, `toast_enabled`, `alarm_enabled`, `sound_file
 `alarm_timeout`, `alarm_gap`. Each is also overridable via an `UPPER_SNAKE` env
 var of the same name.
 
-The alarm repeats its sound until dismissed or until `alarm_timeout`. By default
-(`alarm_gap: 0`) repeats are back-to-back, so the repeat rate is just the sound
-file's own length — Submarine.aiff is short, which makes it insistent. Set
-`alarm_gap` to the seconds of silence you want between repeats (e.g. `5`) for a
-calmer nag.
+The alarm repeats its sound until dismissed or until `alarm_timeout`, with
+`alarm_gap` seconds of silence between repeats (default **8**). Set `alarm_gap: 0`
+to play back-to-back — the repeat rate then becomes the sound file's own length,
+which for a short sound like Submarine.aiff is relentless. The gap never pushes
+the loop past `alarm_timeout`: it sleeps in 1-second slices and re-checks the
+deadline each slice.
 
 Storage is all local JSON under `~/.config/nagsly/`; per-source event files live
 in `events.d/`, and a fetch overwrites its own file wholesale.

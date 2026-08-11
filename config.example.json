@@ -9,8 +9,8 @@
   "toast_enabled": 1,
   "alarm_enabled": 1,
 
-  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Submarine, Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds). alarm_gap: seconds of silence between repeats — 0 plays back-to-back (repeat rate = the sound's own length); raise it to make the nag less frantic. The gap never pushes the loop past alarm_timeout.",
+  "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Submarine, Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds). alarm_gap: seconds of silence between repeats — set 0 to play back-to-back (repeat rate = the sound's own length), which is frantic. The gap never pushes the loop past alarm_timeout.",
   "sound_file": "/System/Library/Sounds/Submarine.aiff",
   "alarm_timeout": 300,
-  "alarm_gap": 0
+  "alarm_gap": 8
 }

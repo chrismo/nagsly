@@ -80,7 +80,7 @@ TOAST_ENABLED="$(config toast_enabled 1)"
 ALARM_ENABLED="$(config alarm_enabled 1)"
 SOUND_FILE="$(config sound_file /System/Library/Sounds/Submarine.aiff)"
 ALARM_TIMEOUT="$(config alarm_timeout 300)"  # hard stop for the loop if never dismissed
-ALARM_GAP="$(config alarm_gap 0)"            # silence between repeats, seconds (0 = back-to-back)
+ALARM_GAP="$(config alarm_gap 8)"            # silence between repeats, seconds (0 = back-to-back)
 
 # Guard against a silently-broken config: if config.json EXISTS but doesn't
 # parse, every knob above silently fell back to its default (which could e.g.
@@ -650,6 +650,13 @@ do_fire() {
         done
       ' "$ALARM_LOOP_TAG" "$SOUND_FILE" "$ALARM_TIMEOUT" "$ALARM_GAP" &
       local loop_pid=$!
+      # Drop the loop from the job table so killing it below doesn't print
+      # "Terminated: 15" to the poll's stderr (and thence the log). Only visible
+      # once alarm_gap existed: the loop now spends most of its life in `sleep`,
+      # so the kill lands mid-sleep instead of inside afplay. `kill 2>/dev/null`
+      # can't suppress this — the notice comes from the shell's job reaper, not
+      # from kill. disown does NOT detach the process; the loop still dies here.
+      disown "$loop_pid" 2>/dev/null || true
       # alerter blocks until Stop / close / timeout — that's the intended nag.
       # On Stop/close we kill the loop early; otherwise the loop self-stops at
       # its deadline. Give alerter the same timeout so it doesn't outlast sound.
