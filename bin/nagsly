@@ -455,39 +455,60 @@ cmd_clear() {
   echo "nagsly: cleared $source.json"
 }
 
-# List the fetch plugins on PATH by their short name (the `<name>` in
-# `nagsly fetch <name>`), one per line, deduped and sorted. Empty if none.
-list_fetch_plugins() {
-  local dir p base
+# Discover executable plugins on PATH by prefix; callers sort/deduplicate the
+# short names. Neither discovery nor help runs the plugins.
+list_plugins() {
+  local prefix="$1" dir p base name
   while IFS=: read -rd: dir; do
     [[ -d "$dir" ]] || continue
-    for p in "$dir"/nagsly-fetch-*; do
+    for p in "$dir"/nagsly-"$prefix"-*; do
       [[ -x "$p" && -f "$p" ]] || continue
-      base="$(basename "$p")"
-      printf '%s\n' "${base#nagsly-fetch-}"
+      base="${p##*/}"
+      name="${base#nagsly-"$prefix"-}"
+      monitor_kind_valid "$name" && printf '%s\n' "$name"
     done
   done <<< "$PATH:"
   # (the trailing ':' makes the last PATH entry a complete field for read -d:)
 }
 
-# Print available plugins as a friendly hint (to the given stream, default stderr).
+# Print sorted, deduplicated names with a consistent separator.
+plugin_names() {
+  local names name joined=""
+  names="$(list_plugins "$1" | sort -u)"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    joined="${joined:+$joined, }$name"
+  done <<< "$names"
+  printf '%s' "$joined"
+}
+
 fetch_hint() {
-  local plugins; plugins="$(list_fetch_plugins | sort -u)"
+  local plugins; plugins="$(plugin_names fetch)"
+  echo 'usage: nagsly fetch <name> [args...]'
   if [[ -n "$plugins" ]]; then
-    echo "available plugins: $(printf '%s' "$plugins" | paste -sd', ' -)"
-    echo "usage: nagsly fetch <name> [args...]   (e.g. nagsly fetch $(printf '%s' "$plugins" | head -n1))"
+    echo "available plugins: $plugins"
   else
-    echo "no nagsly-fetch-* plugins found on PATH."
-    echo "install one (e.g. the bundled gws feeder) so \`nagsly fetch gws\` works."
+    echo 'no nagsly-fetch-* plugins found on PATH.'
+    echo 'install one (e.g. the bundled gws feeder) so nagsly fetch gws works.'
+  fi
+}
+
+monitor_add_hint() {
+  local kinds; kinds="$(plugin_names monitor)"
+  echo 'usage: nagsly monitor add <kind> [args...]'
+  if [[ -n "$kinds" ]]; then
+    echo "available monitor kinds: $kinds"
+    echo 'run nagsly monitor add <kind> --help for kind-specific usage.'
+  else
+    echo 'no nagsly-monitor-* plugins found on PATH.'
   fi
 }
 
 cmd_fetch() {
-  if [[ -z "${1:-}" ]]; then
-    echo "nagsly: fetch needs a plugin name." >&2
-    fetch_hint >&2
-    return 2
-  fi
+  case "${1:-}" in
+    -h|--help|help) fetch_hint; return 0 ;;
+    '') echo 'nagsly: fetch needs a plugin name.' >&2; fetch_hint >&2; return 2 ;;
+  esac
   local name="$1"; shift
   local plugin="nagsly-fetch-$name"
   if ! command -v "$plugin" >/dev/null 2>&1; then
@@ -687,14 +708,28 @@ monitor_file_for_id() {
 }
 
 cmd_monitor() {
-  local action="${1:-list}" file id title kind status url record name plugin
+  local action="${1:-list}" file id title kind status url record name plugin bare=0
+  (( $# == 0 )) && bare=1
   shift || true
   case "$action" in
     add)
-      name="${1:-}"; [[ $# -eq 0 ]] || shift
-      monitor_kind_valid "$name" || die "monitor add: invalid monitor kind '$name'"
+      name="${1:-}"
+      case "$name" in
+        -h|--help|help) monitor_add_hint; return 0 ;;
+        '') echo 'nagsly: monitor add needs a kind.' >&2; monitor_add_hint >&2; return 2 ;;
+      esac
+      shift
+      if ! monitor_kind_valid "$name"; then
+        echo "nagsly: monitor add: invalid monitor kind '$name'" >&2
+        monitor_add_hint >&2
+        return 2
+      fi
       plugin="nagsly-monitor-$name"
-      command -v "$plugin" >/dev/null 2>&1 || die "monitor add: $plugin not found on PATH"
+      if ! command -v "$plugin" >/dev/null 2>&1; then
+        echo "nagsly: monitor add: $plugin not found on PATH" >&2
+        monitor_add_hint >&2
+        return 2
+      fi
       "$plugin" --register "$@"
       ;;
     list)
@@ -702,7 +737,11 @@ cmd_monitor() {
       shopt -s nullglob
       local files=("$MONITORS_D"/*.json)
       shopt -u nullglob
-      if (( ${#files[@]} == 0 )); then echo "no monitors"; return 0; fi
+      if (( ${#files[@]} == 0 )); then
+        echo 'no monitors'
+        (( bare == 0 )) || monitor_add_hint
+        return 0
+      fi
       for file in "${files[@]}"; do
         id="${file##*/}"; id="${id%.json}"
         monitor_file_for_id "$id" >/dev/null || die "invalid monitor filename: $file"

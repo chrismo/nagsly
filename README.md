@@ -33,6 +33,7 @@ nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH (not calendar-on
 nagsly sync                   # check all configured integrations now
 nagsly sync --due             # scheduler mode: check only due integrations
 nagsly monitor add <kind> [args] # register via nagsly-monitor-<kind> on PATH
+nagsly monitor add            # show installed monitor kinds and usage
 nagsly monitor list           # list pending and completed monitors
 nagsly monitor rm <id>        # remove a monitor
 ```
@@ -73,8 +74,10 @@ config + events intact).
 
 Register a monitor; it persists after the command exits and is checked by the
 core sync agent. State transitions produce a macOS toast (and a brief sound
-where appropriate); completed monitors remain listed until removed. Core
-usage describes only the generic monitor command; each plugin owns its
+where appropriate); completed monitors remain listed until removed. Run
+`nagsly monitor add` (or `nagsly monitor add --help`) to discover installed
+kinds; `nagsly monitor` also shows this hint when there are no stored monitors.
+Core usage describes only the generic monitor command; each plugin owns its
 specific help (`nagsly monitor add <kind> --help`).
 
 ```bash
@@ -131,7 +134,9 @@ Monitor definitions live in `monitors.d/`; scheduler health is stored in `state/
 
 A monitor kind `K` is a safe name matching `[a-zA-Z0-9][a-zA-Z0-9_-]*`.
 `nagsly monitor add K [args...]` invokes `nagsly-monitor-K --register [args...]`
-on PATH, passing arguments unchanged. Registration owns its own lookup/auth and
+on PATH, passing arguments unchanged. Discovery lists executable
+`nagsly-monitor-*` commands on PATH, sorted and deduplicated, without running
+them. Registration owns its own lookup/auth and
 writes a JSON file atomically under `~/.config/nagsly/monitors.d/`. A record
 must be a JSON object with string fields `id`, `kind`, `title`, and `status`;
 `url` is an optional string. `kind` must equal `K`, and `id` must equal the

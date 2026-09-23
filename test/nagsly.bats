@@ -805,13 +805,43 @@ EOF
   [ ! -e "$NAGSLY_DIR/monitors.d/build-watch-123.json" ]
 }
 
+@test "monitor add and its help discover executable kinds, sorted and deduplicated" {
+  local first="$TEST_DIR/first" second="$TEST_DIR/second"
+  mkdir -p "$first" "$second"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$first/nagsly-monitor-zeta"
+  cp "$first/nagsly-monitor-zeta" "$second/nagsly-monitor-zeta"
+  cp "$first/nagsly-monitor-zeta" "$second/nagsly-monitor-alpha"
+  cp "$first/nagsly-monitor-zeta" "$second/nagsly-monitor-disabled"
+  chmod +x "$first/nagsly-monitor-zeta" "$second/nagsly-monitor-zeta" "$second/nagsly-monitor-alpha"
+  PATH="$first:$second:$PATH" run "$BIN" monitor add
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"available monitor kinds: alpha, "*"zeta"* ]] || false
+  [[ "$output" != *"disabled"* ]] || false
+  [ "$(printf '%s\n' "$output" | grep -o 'zeta' | wc -l | tr -d ' ')" -eq 1 ]
+  PATH="$first:$second:$PATH" run "$BIN" monitor add --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"usage: nagsly monitor add <kind> [args...]"* ]] || false
+  [[ "$output" == *"available monitor kinds: alpha, "*"zeta"* ]] || false
+}
+
+@test "bare monitor hints at add when no monitors are stored" {
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no monitors"* ]] || false
+  [[ "$output" == *"available monitor kinds:"*"gmail"*"pr"* ]] || false
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor list
+  [ "$status" -eq 0 ]
+  [ "$output" = 'no monitors' ]
+}
+
 @test "monitor add rejects unsafe names and missing plugins" {
   run "$BIN" monitor add ../escape
   [ "$status" -ne 0 ]
   [[ "$output" == *"invalid monitor kind"* ]] || false
-  run "$BIN" monitor add not-installed
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor add not-installed
   [ "$status" -ne 0 ]
   [[ "$output" == *"nagsly-monitor-not-installed"* ]] || false
+  [[ "$output" == *"available monitor kinds:"* ]] || false
 }
 
 @test "monitor list and rm work for an arbitrary plugin kind" {
@@ -1019,6 +1049,16 @@ EOF
   [[ "$output" == *"plugin not found"* ]] || false
   [[ "$output" == *"available plugins:"* ]] || false
   [[ "$output" == *"fake"* ]] || false      # discovered plugin is listed
+}
+
+@test "fetch --help shows generic usage and discovered plugins" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\nexit 17\n' > "$pdir/nagsly-fetch-fake"
+  chmod +x "$pdir/nagsly-fetch-fake"
+  PATH="$pdir:$PATH" run "$BIN" fetch --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"usage: nagsly fetch <name> [args...]"* ]] || false
+  [[ "$output" == *"fake"* ]] || false
 }
 
 @test "fetch with no plugin name lists the available plugins" {
