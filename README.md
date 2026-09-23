@@ -32,8 +32,6 @@ nagsly stop                   # silence a currently-firing alarm
 nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH (not calendar-only)
 nagsly sync                   # check all configured integrations now
 nagsly sync --due             # scheduler mode: check only due integrations
-nagsly pr <number|URL|branch> # monitor a GitHub PR until merged/closed
-nagsly gmail [recipient|query] # monitor a sent Gmail thread for a reply
 nagsly monitor add <kind> [args] # register via nagsly-monitor-<kind> on PATH
 nagsly monitor list           # list pending and completed monitors
 nagsly monitor rm <id>        # remove a monitor
@@ -75,17 +73,17 @@ config + events intact).
 
 Register a monitor; it persists after the command exits and is checked by the
 core sync agent. State transitions produce a macOS toast (and a brief sound
-where appropriate); completed monitors remain listed until removed. `nagsly pr`
-and `nagsly gmail` are shortcuts for `nagsly monitor add pr` and
-`nagsly monitor add gmail`.
+where appropriate); completed monitors remain listed until removed. Core
+usage describes only the generic monitor command; each plugin owns its
+specific help (`nagsly monitor add <kind> --help`).
 
 ```bash
-nagsly pr 123                       # PR number or URL (no argument: current branch)
+nagsly monitor add pr 123                       # PR number or URL (no argument: current branch)
 nagsly monitor list
 nagsly monitor rm <monitor-id>
-nagsly gmail sarah@example.com      # newest sent thread to this recipient
-nagsly gmail "subject:launch review" # pass through Gmail search syntax
-nagsly gmail launch                 # bare word becomes subject:launch
+nagsly monitor add gmail sarah@example.com      # newest sent thread to this recipient
+nagsly monitor add gmail "subject:launch review" # pass through Gmail search syntax
+nagsly monitor add gmail launch                 # bare word becomes subject:launch
 ```
 
 PR monitors use `gh` and classify draft/review/check/merged/closed states;

@@ -24,17 +24,17 @@ gws_call() { "$GWS" "$@"; }
 
 register() {
   local query_arg="${1:-}" query list ids msg id thread_id subject to chosen url stable_id file
-  command -v "$GWS" >/dev/null 2>&1 || { echo "nagsly gmail: $GWS not found" >&2; return 127; }
-  command -v jq >/dev/null 2>&1 || { echo 'nagsly gmail: jq not found' >&2; return 127; }
-  command -v super >/dev/null 2>&1 || { echo 'nagsly gmail: super not found' >&2; return 127; }
+  command -v "$GWS" >/dev/null 2>&1 || { echo "nagsly monitor add gmail: $GWS not found" >&2; return 127; }
+  command -v jq >/dev/null 2>&1 || { echo 'nagsly monitor add gmail: jq not found' >&2; return 127; }
+  command -v super >/dev/null 2>&1 || { echo 'nagsly monitor add gmail: super not found' >&2; return 127; }
   query="$(build_query "$query_arg")"
   local params
   params="$(printf '{"userId":"me","q":%s,"maxResults":6}' "$(json_quote "$query")")"
   list="$(gws_call gmail users messages list --params "$params")" || {
-    echo 'nagsly gmail: search failed (check gws Gmail read-only auth)' >&2; return 1;
+    echo 'nagsly monitor add gmail: search failed (check gws Gmail read-only auth)' >&2; return 1;
   }
   ids="$(jq -r '.messages // [] | map(.id // empty) | join(" ")' <<<"$list")"
-  [[ -n "$ids" ]] || { echo "nagsly gmail: no sent mail matches '$query'" >&2; return 1; }
+  [[ -n "$ids" ]] || { echo "nagsly monitor add gmail: no sent mail matches '$query'" >&2; return 1; }
   local -a idarr; IFS=' ' read -r -a idarr <<< "$ids"; chosen="${idarr[0]}"
   if (( ${#idarr[@]} > 1 )); then
     local i=0 pick
@@ -48,12 +48,12 @@ register() {
     printf 'Choose message 1-%d [1]: ' "${#idarr[@]}"
     read -r pick || pick=1; pick="${pick:-1}"
     if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#idarr[@]} )); then
-      echo "nagsly gmail: invalid selection '$pick'" >&2; return 2
+      echo "nagsly monitor add gmail: invalid selection '$pick'" >&2; return 2
     fi
     chosen="${idarr[$((pick - 1))]}"
   fi
   thread_id="$(jq -er --arg id "$chosen" '.messages[] | select(.id == $id) | .threadId | select(type == "string" and length > 0)' <<<"$list")" || {
-    echo 'nagsly gmail: search returned no usable thread ID' >&2; return 1;
+    echo 'nagsly monitor add gmail: search returned no usable thread ID' >&2; return 1;
   }
   msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$chosen\",\"format\":\"metadata\"}")"
   subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
@@ -136,11 +136,19 @@ sync_monitors() {
   done
 }
 
+usage() { echo 'Usage: nagsly monitor add gmail [recipient|Gmail query]'; }
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
-    --register) shift; register "${1:-}" ;;
+    --register)
+      shift
+      case "${1:-}" in
+        -h|--help|help) usage ;;
+        *) register "${1:-}" ;;
+      esac
+      ;;
     --sync) sync_monitors ;;
-    -h|--help|help) echo 'Usage: nagsly gmail [recipient|Gmail query]'; exit 0 ;;
+    -h|--help|help) usage ;;
     *) register "${1:-}" ;;
   esac
 fi

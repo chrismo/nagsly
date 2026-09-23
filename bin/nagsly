@@ -1006,8 +1006,6 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH (any fetch plugin)
   nagsly sync [--due]           check integrations now; --due honors their cadence
-  nagsly pr <number|URL|branch>  register a PR monitor
-  nagsly gmail [recipient|query] register a Gmail reply monitor
   nagsly monitor add <kind> [args] register via nagsly-monitor-<kind> on PATH
   nagsly monitor [list]          list active/completed monitors
   nagsly monitor rm <id>        remove a monitor
@@ -1027,8 +1025,6 @@ main() {
     stop)   cmd_stop ;;
     fetch)  cmd_fetch "$@" ;;
     sync)   cmd_sync "$@" ;;
-    pr)     cmd_monitor add pr "$@" ;;
-    gmail)  cmd_monitor add gmail "$@" ;;
     monitor) cmd_monitor "$@" ;;
     # internal, not user-facing (absent from usage): `build` normalizes raw
     # source JSON for plugins; `next` is poll's dry-run, kept for the test suite

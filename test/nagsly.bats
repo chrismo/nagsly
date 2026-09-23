@@ -668,6 +668,29 @@ EOF
   [[ "$output" == *"integer from 1 to 3600"* ]] || false
 }
 
+@test "core help is generic and PR/Gmail are not top-level commands" {
+  run "$BIN" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nagsly monitor add <kind>"* ]] || false
+  [[ "$output" != *"nagsly pr "* ]] || false
+  [[ "$output" != *"nagsly gmail "* ]] || false
+  run "$BIN" pr 123
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown subcommand: pr"* ]] || false
+  run "$BIN" gmail sarah@example.com
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown subcommand: gmail"* ]] || false
+}
+
+@test "monitor add forwards help to the PR and Gmail plugins" {
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor add pr --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nagsly monitor add pr"* ]] || false
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor add gmail --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nagsly monitor add gmail"* ]] || false
+}
+
 @test "pr registers a monitor through the standalone monitor adapter" {
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gh" <<'EOF'
@@ -681,7 +704,7 @@ else
 fi
 EOF
   chmod +x "$pdir/gh"
-  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr 123
   [ "$status" -eq 0 ]
   local -a monitor_files=("$NAGSLY_DIR/monitors.d"/pr-*.json)
   [ "${#monitor_files[@]}" -eq 1 ]
@@ -698,7 +721,7 @@ if [[ "$1 $2 $3" == "pr view --json" ]]; then
 else exit 2; fi
 EOF
   chmod +x "$pdir/gh"
-  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr
   [ "$status" -eq 0 ]
   [ -f "$NAGSLY_DIR/monitors.d/pr-$(printf '%s' 'https://github.com/acme/app/pull/123' | shasum -a 256 | cut -c1-12).json" ]
 }
@@ -733,7 +756,7 @@ EOF
 echo notify >> "$TEST_DIR/gmail-notifies"
 EOF
   chmod +x "$pdir/gws" "$pdir/alerter"
-  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" gmail sarah@example.com
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail sarah@example.com
   [ "$status" -eq 0 ]
   grep -q 'in:sent to:sarah@example.com' "$NAGSLY_DIR/gws.args"
   local -a monitor_files=("$NAGSLY_DIR/monitors.d"/gmail-*.json)
@@ -757,7 +780,7 @@ if [[ "$4" == list ]]; then printf '{"messages":[{"id":"msg-1"}]}\n'
 else printf '{"id":"msg-1","payload":{"headers":[]}}\n'; fi
 EOF
   chmod +x "$pdir/gws"
-  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" gmail sarah@example.com
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail sarah@example.com
   [ "$status" -ne 0 ]
   [ ! -d "$NAGSLY_DIR/monitors.d" ]
 }
@@ -949,7 +972,7 @@ EOF
   local id="pr-$(printf '%s' 'https://github.com/acme/app/pull/123' | shasum -a 256 | cut -c1-12)"
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '{"id":"%s","kind":"pr","number":"123","status":"merged","last_state":"merged"}\n' "$id" > "$NAGSLY_DIR/monitors.d/$id.json"
-  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr 123
   [ "$status" -eq 0 ]
   [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/$id.json")" = merged ]
 }
@@ -961,9 +984,9 @@ EOF
 printf '%s\n' '{"number":123,"title":"Ship \"it\"","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}'
 EOF
   chmod +x "$pdir/gh"
-  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr 123
   [ "$status" -eq 0 ]
-  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr 123
   [ "$status" -eq 0 ]
   local -a monitor_files=("$NAGSLY_DIR/monitors.d"/pr-*.json)
   [ "${#monitor_files[@]}" -eq 1 ]
