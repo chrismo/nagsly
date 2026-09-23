@@ -4,8 +4,9 @@
 #
 # One binary, git-style subcommands. Core owns a per-source JSON event store
 # (~/.config/nagsly/events.d/*.json) and an alarm engine; it knows nothing about
-# any calendar. Calendar sources are plugins (nagsly-fetch-<name> on PATH) that
-# populate events; core just stores and fires them.
+# any calendar. `fetch` dispatches to nagsly-fetch-<name> on PATH without
+# requiring that plugin to be calendar-related. The bundled GWS fetcher writes
+# calendar events; core stores and fires events independently.
 #
 # The alarm mechanic: launchd runs `nagsly poll` on a short interval (60s). The
 # poll finds the next meeting and, per enabled mode, fires INLINE if we're within
@@ -25,7 +26,7 @@
 #     poll                    launchd entry point: fire modes due for the next meeting
 #     status                  read-only "is it working" rollup
 #     stop                    silence a currently-firing alarm
-#     fetch <name> [args...]  run nagsly-fetch-<name> on PATH, repopulate <name>.json
+#     fetch <name> [args...]  run nagsly-fetch-<name> on PATH; pass args through
 #
 #   Internal (not user-facing, dispatched from the same binary):
 #     build <source>          normalize raw source JSON (stdin) -> canonical
@@ -984,7 +985,7 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly status                 read-only "is it working" rollup
   nagsly logs [-f]              recent fires/errors + heartbeat summary (-f: follow)
   nagsly stop                   silence a currently-firing alarm
-  nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
+  nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH (any fetch plugin)
   nagsly sync [--due]           check integrations now; --due honors their cadence
   nagsly pr <number|URL|branch>  register a PR monitor
   nagsly gmail [recipient|query] register a Gmail reply monitor

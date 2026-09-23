@@ -10,9 +10,11 @@ heads-down.
 
 - **Core** = a per-source JSON event store + an alarm engine. No calendar
   dependency; you can `nagsly add` events by hand and it will alarm on them.
-- **Calendar fetch plugins** (`nagsly-fetch-<name>` on PATH) populate events
-  from calendars. `nagsly-fetch-gws` is the standalone Google Calendar feeder
-  (built on the [Google Workspace CLI](https://github.com/googleworkspace/cli)).
+- **Fetch plugins** (`nagsly-fetch-<name>` on PATH) are invoked by
+  `nagsly fetch <name> [args]`. The command passes arguments through; it does
+  not require a calendar source or impose a calendar-specific interface.
+  The bundled `nagsly-fetch-gws` fetches Google Calendar events (via the
+  [Google Workspace CLI](https://github.com/googleworkspace/cli)).
 - **Sync integrations** (`nagsly-sync-<name>` on PATH) perform one bounded
   network check when the core scheduler says they are due. PR and Gmail monitors
   use `gh` and the Google Workspace CLI respectively.
@@ -27,7 +29,7 @@ nagsly clear [source]         # wipe a source's file (default: manual)
 nagsly poll                   # launchd entry point: arm the next meeting
 nagsly status                 # read-only "is it working" rollup
 nagsly stop                   # silence a currently-firing alarm
-nagsly fetch <name> [args]    # manually run nagsly-fetch-<name> on PATH
+nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH (not calendar-only)
 nagsly sync                   # check all configured integrations now
 nagsly sync --due             # scheduler mode: check only due integrations
 nagsly pr <number|URL|branch> # monitor a GitHub PR until merged/closed
@@ -132,7 +134,8 @@ the loop past `alarm_timeout`: it sleeps in 1-second slices and re-checks the
 deadline each slice.
 
 Storage is all local JSON under `~/.config/nagsly/`; per-source event files live
-in `events.d/`, and a fetch overwrites its own file wholesale.
+in `events.d/`. The bundled GWS fetcher replaces its own source file on refresh;
+`nagsly fetch` itself only dispatches to a plugin.
 
 ## Alternatives to consider
 

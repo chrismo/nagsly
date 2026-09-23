@@ -1,5 +1,5 @@
 {
-  "_comment": "nagsly config. install.sh seeds this to ~/.config/nagsly/config.json (never overwriting an existing one). All knobs are also overridable via an UPPER_SNAKE env var of the same name (e.g. ALARM_TIMEOUT=4) for tests and one-offs. NO SECRETS live here — the calendar feed is the per-source events.d/*.json files a fetcher writes.",
+  "_comment": "nagsly config. install.sh seeds this to ~/.config/nagsly/config.json (never overwriting an existing one). All knobs are also overridable via an UPPER_SNAKE env var of the same name (e.g. ALARM_TIMEOUT=4) for tests and one-offs. NO SECRETS live here — event feeds are per-source events.d/*.json files; the bundled GWS fetcher writes one.",
 
   "_leads": "seconds before meeting start",
   "toast_lead": 600,
