@@ -674,41 +674,60 @@ do_fire() {
   esac
 }
 
+monitor_kind_valid() {
+  [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]
+}
+
 monitor_file_for_id() {
   local id="$1"
-  [[ "$id" =~ ^(pr|gmail)-[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
+  # Kind can contain hyphens; do not try to infer its boundary here. Compare
+  # the stored kind to the full filename when reading a record instead.
+  [[ "$id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*-[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
   printf '%s/%s.json' "$MONITORS_D" "$id"
 }
 
 cmd_monitor() {
-  local action="${1:-list}" file id title kind status url record
+  local action="${1:-list}" file id title kind status url record name plugin
   shift || true
-  if [[ "$action" == "list" && "${1:-}" == "rm" ]]; then action="rm"; shift; fi
-  mkdir -p "$MONITORS_D"
   case "$action" in
+    add)
+      name="${1:-}"; [[ $# -eq 0 ]] || shift
+      monitor_kind_valid "$name" || die "monitor add: invalid monitor kind '$name'"
+      plugin="nagsly-monitor-$name"
+      command -v "$plugin" >/dev/null 2>&1 || die "monitor add: $plugin not found on PATH"
+      "$plugin" --register "$@"
+      ;;
     list)
+      mkdir -p "$MONITORS_D"
       shopt -s nullglob
       local files=("$MONITORS_D"/*.json)
       shopt -u nullglob
       if (( ${#files[@]} == 0 )); then echo "no monitors"; return 0; fi
       for file in "${files[@]}"; do
+        id="${file##*/}"; id="${id%.json}"
+        monitor_file_for_id "$id" >/dev/null || die "invalid monitor filename: $file"
+        [[ ! -L "$file" ]] || die "invalid monitor symlink: $file"
         record="$(<"$file")"
-        id="$(super -dynamic -f line -c 'coalesce(id, "")' - <<<"$record")" || die "unreadable monitor: $file"
-        title="$(super -dynamic -f line -c 'coalesce(title, "")' - <<<"$record")" || die "unreadable monitor: $file"
-        kind="$(super -dynamic -f line -c 'coalesce(kind, "")' - <<<"$record")" || die "unreadable monitor: $file"
-        status="$(super -dynamic -f line -c 'coalesce(status, "unknown")' - <<<"$record")" || die "unreadable monitor: $file"
-        url="$(super -dynamic -f line -c 'coalesce(url, "")' - <<<"$record")" || die "unreadable monitor: $file"
+        # Strictly check the shared storage fields before displaying them.
+        # Extra fields belong to the plugin; url is optional.
+        kind="$(jq -er '.kind | select(type == "string")' <<<"$record")" || die "invalid monitor: $file"
+        monitor_kind_valid "$kind" || die "invalid monitor kind: $file"
+        [[ "$id" == "$kind-"* && "${id#"$kind-"}" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || die "invalid monitor id: $file"
+        jq -e --arg id "$id" '.id == $id and (.title | type == "string") and (.status | type == "string") and ((has("url") | not) or (.url | type == "string"))' <<<"$record" >/dev/null || die "invalid monitor: $file"
+        title="$(jq -r '.title' <<<"$record")"
+        status="$(jq -r '.status' <<<"$record")"
+        url="$(jq -r '.url // ""' <<<"$record")"
         printf '%-20s %-7s %-22s %s  %s\n' "$id" "$kind" "$status" "$title" "$url"
       done
       ;;
     rm)
       id="${1:-}"
       file="$(monitor_file_for_id "$id")" || die "monitor rm: invalid monitor id '$id'"
-      [[ -f "$file" ]] || die "monitor rm: no monitor '$id'"
+      [[ -f "$file" && ! -L "$file" ]] || die "monitor rm: no monitor '$id'"
       rm -f "$file"
       echo "nagsly: removed monitor $id"
       ;;
-    *) die "monitor: expected list or rm <id>" ;;
+    *) die "monitor: expected add <kind> [args], list, or rm <id>" ;;
   esac
 }
 
@@ -989,6 +1008,7 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly sync [--due]           check integrations now; --due honors their cadence
   nagsly pr <number|URL|branch>  register a PR monitor
   nagsly gmail [recipient|query] register a Gmail reply monitor
+  nagsly monitor add <kind> [args] register via nagsly-monitor-<kind> on PATH
   nagsly monitor [list]          list active/completed monitors
   nagsly monitor rm <id>        remove a monitor
 EOF
@@ -1007,12 +1027,8 @@ main() {
     stop)   cmd_stop ;;
     fetch)  cmd_fetch "$@" ;;
     sync)   cmd_sync "$@" ;;
-    pr)
-      local adapter="nagsly-monitor-pr"; command -v "$adapter" >/dev/null 2>&1 || die "$adapter not found on PATH"
-      "$adapter" --register "$@" ;;
-    gmail)
-      local adapter="nagsly-monitor-gmail"; command -v "$adapter" >/dev/null 2>&1 || die "$adapter not found on PATH"
-      "$adapter" --register "$@" ;;
+    pr)     cmd_monitor add pr "$@" ;;
+    gmail)  cmd_monitor add gmail "$@" ;;
     monitor) cmd_monitor "$@" ;;
     # internal, not user-facing (absent from usage): `build` normalizes raw
     # source JSON for plugins; `next` is poll's dry-run, kept for the test suite

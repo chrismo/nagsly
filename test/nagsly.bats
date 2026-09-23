@@ -762,6 +762,72 @@ EOF
   [ ! -d "$NAGSLY_DIR/monitors.d" ]
 }
 
+@test "monitor add dispatches a fourth plugin with arguments untouched" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/nagsly-monitor-build-watch" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$NAGSLY_DIR/args"
+mkdir -p "$NAGSLY_DIR/monitors.d"
+printf '{"id":"build-watch-123","kind":"build-watch","title":"Build","status":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/build-watch-123.json"
+EOF
+  chmod +x "$pdir/nagsly-monitor-build-watch"
+  PATH="$pdir:$PATH" run "$BIN" monitor add build-watch 'a b' --flag
+  [ "$status" -eq 0 ]
+  [ "$(<"$NAGSLY_DIR/args")" = $'--register\na b\n--flag' ]
+  run "$BIN" monitor list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"build-watch-123"*"Build"* ]] || false
+  run "$BIN" monitor rm build-watch-123
+  [ "$status" -eq 0 ]
+  [ ! -e "$NAGSLY_DIR/monitors.d/build-watch-123.json" ]
+}
+
+@test "monitor add rejects unsafe names and missing plugins" {
+  run "$BIN" monitor add ../escape
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid monitor kind"* ]] || false
+  run "$BIN" monitor add not-installed
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"nagsly-monitor-not-installed"* ]] || false
+}
+
+@test "monitor list and rm work for an arbitrary plugin kind" {
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"build-watch-deadbeef","kind":"build-watch","title":"Build","status":"waiting","url":"https://example.com/build"}\n' > "$NAGSLY_DIR/monitors.d/build-watch-deadbeef.json"
+  run "$BIN" monitor list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"build-watch-deadbeef"*"build-watch"*"waiting"*"Build"* ]] || false
+  run "$BIN" monitor rm build-watch-deadbeef
+  [ "$status" -eq 0 ]
+  [ ! -e "$NAGSLY_DIR/monitors.d/build-watch-deadbeef.json" ]
+}
+
+@test "monitor list refuses invalid records, and rm refuses unsafe paths" {
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"wrong-id","kind":"build-watch","title":"Build","status":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/build-watch-deadbeef.json"
+  run "$BIN" monitor list
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid monitor"* ]] || false
+  run "$BIN" monitor rm '../escape'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid monitor id"* ]] || false
+  [ -f "$NAGSLY_DIR/monitors.d/build-watch-deadbeef.json" ]
+}
+
+@test "monitor list rejects missing required fields and rm does not follow symlinks" {
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"build-watch-123","kind":"build-watch","title":"Build"}\n' > "$NAGSLY_DIR/monitors.d/build-watch-123.json"
+  run "$BIN" monitor list
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid monitor"* ]] || false
+  rm "$NAGSLY_DIR/monitors.d/build-watch-123.json"
+  printf 'keep\n' > "$TEST_DIR/target"
+  ln -s "$TEST_DIR/target" "$NAGSLY_DIR/monitors.d/build-watch-123.json"
+  run "$BIN" monitor rm build-watch-123
+  [ "$status" -ne 0 ]
+  [ "$(<"$TEST_DIR/target")" = keep ]
+}
+
 @test "monitor list displays registered monitors and rm removes by id" {
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '{"id":"pr-deadbeef","kind":"pr","title":"Ship nagsly","status":"waiting","url":"https://github.com/acme/app/pull/123"}\n' \

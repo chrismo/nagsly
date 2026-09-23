@@ -34,6 +34,7 @@ nagsly sync                   # check all configured integrations now
 nagsly sync --due             # scheduler mode: check only due integrations
 nagsly pr <number|URL|branch> # monitor a GitHub PR until merged/closed
 nagsly gmail [recipient|query] # monitor a sent Gmail thread for a reply
+nagsly monitor add <kind> [args] # register via nagsly-monitor-<kind> on PATH
 nagsly monitor list           # list pending and completed monitors
 nagsly monitor rm <id>        # remove a monitor
 ```
@@ -74,7 +75,9 @@ config + events intact).
 
 Register a monitor; it persists after the command exits and is checked by the
 core sync agent. State transitions produce a macOS toast (and a brief sound
-where appropriate); completed monitors remain listed until removed.
+where appropriate); completed monitors remain listed until removed. `nagsly pr`
+and `nagsly gmail` are shortcuts for `nagsly monitor add pr` and
+`nagsly monitor add gmail`.
 
 ```bash
 nagsly pr 123                       # PR number or URL (no argument: current branch)
@@ -125,6 +128,31 @@ are seconds (minimum 60); the example GWS refresh cadence is 900 seconds
 (the scheduler uses 900 when no per-integration cadence is configured).
 `NAGSLY_SYNC_TIMEOUT` bounds each integration check (default 120 seconds).
 Monitor definitions live in `monitors.d/`; scheduler health is stored in `state/`.
+
+### Monitor plugin contract
+
+A monitor kind `K` is a safe name matching `[a-zA-Z0-9][a-zA-Z0-9_-]*`.
+`nagsly monitor add K [args...]` invokes `nagsly-monitor-K --register [args...]`
+on PATH, passing arguments unchanged. Registration owns its own lookup/auth and
+writes a JSON file atomically under `~/.config/nagsly/monitors.d/`. A record
+must be a JSON object with string fields `id`, `kind`, `title`, and `status`;
+`url` is an optional string. `kind` must equal `K`, and `id` must equal the
+filename without `.json` and have the form `K-<stable-id>`, with `<stable-id>`
+matching `[a-zA-Z0-9][a-zA-Z0-9-]*`. Plugin-specific fields are allowed.
+Registration should derive a stable ID from the remote identity, deduplicate
+without resetting completed state, and retain completed records until explicit
+`nagsly monitor rm <id>`. Core validates shared fields when listing and
+validates paths when removing; the plugin owns its state transitions and
+notification behavior.
+
+For background updates, configure `K` in `sync_plugins` and provide a separate
+`nagsly-sync-K` executable on PATH. Core runs it with no arguments on the
+configured cadence (minimum 60 seconds), records success/failure, and bounds its
+process group with `NAGSLY_SYNC_TIMEOUT`. Sync adapters must report errors by
+nonzero exit and keep network checks off the alarm path. The bundled PR/Gmail
+sync adapters delegate to their respective monitor plugins' `--sync` mode;
+that internal flag is not a requirement for other plugins. No manifest or
+plugin registry is needed.
 
 The alarm repeats its sound until dismissed or until `alarm_timeout`, with
 `alarm_gap` seconds of silence between repeats (default **8**). Set `alarm_gap: 0`
