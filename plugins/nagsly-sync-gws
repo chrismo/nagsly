@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Core sync adapter for the Google Calendar feed. Cadence belongs to nagsly;
+# this executable performs one refresh and returns.
+set -euo pipefail
+
+command -v nagsly-fetch-gws >/dev/null 2>&1 || {
+  echo "nagsly-sync-gws: nagsly-fetch-gws is not installed on PATH" >&2
+  exit 127
+}
+exec nagsly-fetch-gws

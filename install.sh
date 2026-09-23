@@ -21,10 +21,13 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="com.chrismo.nagsly"
+SYNC_LABEL="com.chrismo.nagsly.sync"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/nagsly"
 PLIST_SRC="$REPO_DIR/$LABEL.plist.template"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
+SYNC_PLIST_SRC="$REPO_DIR/$SYNC_LABEL.plist.template"
+SYNC_PLIST_DST="$HOME/Library/LaunchAgents/$SYNC_LABEL.plist"
 UID_="$(id -u)"
 
 info() { printf 'nagsly install: %s\n' "$*"; }
@@ -33,8 +36,9 @@ die()  { printf 'nagsly install: %s\n' "$*" >&2; exit 1; }
 # --- uninstall ---------------------------------------------------------------
 if [[ "${1:-}" == "--uninstall" ]]; then
   launchctl bootout "gui/$UID_/$LABEL" 2>/dev/null || true
-  rm -f "$PLIST_DST" "$BIN_DIR/nagsly"
-  rm -f "$BIN_DIR"/nagsly-fetch-*
+  launchctl bootout "gui/$UID_/$SYNC_LABEL" 2>/dev/null || true
+  rm -f "$PLIST_DST" "$SYNC_PLIST_DST" "$BIN_DIR/nagsly"
+  rm -f "$BIN_DIR"/nagsly-fetch-* "$BIN_DIR"/nagsly-sync-* "$BIN_DIR"/nagsly-monitor-*
   info "uninstalled (config + events left intact at $CONFIG_DIR)"
   exit 0
 fi
@@ -51,7 +55,8 @@ install -m 0755 "$REPO_DIR/bin/nagsly" "$BIN_DIR/nagsly"
 info "installed nagsly -> $BIN_DIR/nagsly"
 
 shopt -s nullglob
-for p in "$REPO_DIR"/plugins/nagsly-fetch-*; do
+for p in "$REPO_DIR"/plugins/nagsly-fetch-* "$REPO_DIR"/plugins/nagsly-sync-* "$REPO_DIR"/plugins/nagsly-monitor-*; do
+  [[ -f "$p" ]] || continue
   install -m 0755 "$p" "$BIN_DIR/$(basename "$p")"
   info "installed plugin -> $BIN_DIR/$(basename "$p")"
 done
@@ -83,7 +88,14 @@ info "wrote launchd plist -> $PLIST_DST"
 launchctl bootout "gui/$UID_/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$UID_" "$PLIST_DST"
 launchctl enable "gui/$UID_/$LABEL" 2>/dev/null || true
-info "loaded launchd agent $LABEL (polls every 60s + at load)"
+info "loaded launchd agent $LABEL (alarm poll every 60s + at load)"
+
+[[ -f "$SYNC_PLIST_SRC" ]] || die "sync plist template missing: $SYNC_PLIST_SRC"
+sed "s|__HOME__|$HOME|g" "$SYNC_PLIST_SRC" > "$SYNC_PLIST_DST"
+launchctl bootout "gui/$UID_/$SYNC_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_" "$SYNC_PLIST_DST"
+launchctl enable "gui/$UID_/$SYNC_LABEL" 2>/dev/null || true
+info "loaded launchd agent $SYNC_LABEL (integration sync every 60s; per-integration cadence)"
 
 # --- receipt -----------------------------------------------------------------
 if launchctl print "gui/$UID_/$LABEL" >/dev/null 2>&1; then

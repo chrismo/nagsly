@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+command -v nagsly-monitor-pr >/dev/null 2>&1 || {
+  echo 'nagsly-sync-pr: nagsly-monitor-pr is not installed on PATH' >&2
+  exit 127
+}
+exec nagsly-monitor-pr --sync

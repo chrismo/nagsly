@@ -44,11 +44,11 @@ build_gws() {
 @test "list is epoch-sorted ascending" {
   build_gws
   run "$BIN" list
-  [[ "${lines[0]}" == *"Eng managers chat"* ]]
-  [[ "${lines[1]}" == *"Engineering Forum"* ]]
-  [[ "${lines[2]}" == *"Change Management"* ]]
-  [[ "${lines[3]}" == *"Focus block"* ]]
-  [[ "${lines[4]}" == *"All hands - Q3 kickoff"* ]]
+  [[ "${lines[0]}" == *"Eng managers chat"* ]] || false
+  [[ "${lines[1]}" == *"Engineering Forum"* ]] || false
+  [[ "${lines[2]}" == *"Change Management"* ]] || false
+  [[ "${lines[3]}" == *"Focus block"* ]] || false
+  [[ "${lines[4]}" == *"All hands - Q3 kickoff"* ]] || false
 }
 
 @test "renders day + HH:MM in local time and carries the title" {
@@ -56,11 +56,11 @@ build_gws() {
   run "$BIN" list
   # columns: day  time  until  date  title  [source]  id  (NAGSLY_NOW =
   # 2026-07-13, so 07-14 is "tomorrow", later days show the weekday abbrev)
-  [[ "${lines[0]}" == "tomorrow"*"15:30  "*"2026-07-14  Eng managers chat"* ]]
-  [[ "${lines[1]}" == "wed"*"10:00  "*"2026-07-15  Engineering Forum"* ]]
-  [[ "${lines[2]}" == "wed"*"12:00  "*"2026-07-15  Change Management"* ]]
-  [[ "${lines[3]}" == "wed"*"17:00  "*"2026-07-15  Focus block"* ]]
-  [[ "${lines[4]}" == "thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]]
+  [[ "${lines[0]}" == "tomorrow"*"15:30  "*"2026-07-14  Eng managers chat"* ]] || false
+  [[ "${lines[1]}" == "wed"*"10:00  "*"2026-07-15  Engineering Forum"* ]] || false
+  [[ "${lines[2]}" == "wed"*"12:00  "*"2026-07-15  Change Management"* ]] || false
+  [[ "${lines[3]}" == "wed"*"17:00  "*"2026-07-15  Focus block"* ]] || false
+  [[ "${lines[4]}" == "thu"*"10:00  "*"2026-07-16  All hands - Q3 kickoff"* ]] || false
 }
 
 @test "list labels today, tomorrow, and weekday" {
@@ -69,9 +69,9 @@ build_gws() {
   "$BIN" add "Tomorrow evt" "tomorrow 09:00"           # 07-14 (Mon)
   "$BIN" add "Later evt" "2026-07-16T09:00:00-05:00"   # 07-16 (Thu)
   run "$BIN" list
-  [[ "$output" == *"today"*"Today evt"* ]]
-  [[ "$output" == *"tomorrow"*"Tomorrow evt"* ]]
-  [[ "$output" == *"thu"*"Later evt"* ]]
+  [[ "$output" == *"today"*"Today evt"* ]] || false
+  [[ "$output" == *"tomorrow"*"Tomorrow evt"* ]] || false
+  [[ "$output" == *"thu"*"Later evt"* ]] || false
 }
 
 @test "keeps a company all-hands whose attendee list is truncated to just self" {
@@ -81,17 +81,17 @@ build_gws() {
   # organizer.self is what preserves the all-hands. (Prototype regression.)
   build_gws
   run "$BIN" list
-  [[ "$output" == *"All hands - Q3 kickoff"* ]]
+  [[ "$output" == *"All hands - Q3 kickoff"* ]] || false
 }
 
 @test "drops declined, all-day, solo, cancelled, and past events" {
   build_gws
   run "$BIN" list
-  [[ "$output" != *"declined"* ]]
-  [[ "$output" != *"all-day"* ]]
-  [[ "$output" != *"Solo hold"* ]]
-  [[ "$output" != *"Cancelled"* ]]
-  [[ "$output" != *"Way in the past"* ]]
+  [[ "$output" != *"declined"* ]] || false
+  [[ "$output" != *"all-day"* ]] || false
+  [[ "$output" != *"Solo hold"* ]] || false
+  [[ "$output" != *"Cancelled"* ]] || false
+  [[ "$output" != *"Way in the past"* ]] || false
 }
 
 @test "keeps focus time — it looks exactly like a solo hold but IS the nag" {
@@ -101,14 +101,14 @@ build_gws() {
   # either one alone still drops it.
   build_gws
   run "$BIN" list
-  [[ "$output" == *"Focus block"* ]]
+  [[ "$output" == *"Focus block"* ]] || false
 }
 
 @test "a cancelled focus block is still dropped" {
   # Focus time is exempt from the solo-hold rule, NOT from cancellation.
   build_gws
   run "$BIN" list
-  [[ "$output" != *"Focus block I declined"* ]]
+  [[ "$output" != *"Focus block I declined"* ]] || false
 }
 
 @test "advancing now past a meeting drops it from list" {
@@ -119,9 +119,9 @@ build_gws() {
   export NAGSLY_NOW=1784131200
   run "$BIN" list
   [ "${#lines[@]}" -eq 3 ]
-  [[ "${lines[0]}" == *"Change Management"* ]]
-  [[ "${lines[1]}" == *"Focus block"* ]]
-  [[ "${lines[2]}" == *"All hands - Q3 kickoff"* ]]
+  [[ "${lines[0]}" == *"Change Management"* ]] || false
+  [[ "${lines[1]}" == *"Focus block"* ]] || false
+  [[ "${lines[2]}" == *"All hands - Q3 kickoff"* ]] || false
 }
 
 @test "a corrupt events file errors loudly, not silently as 'no meetings'" {
@@ -130,7 +130,7 @@ build_gws() {
   printf 'this is not json {{{' > "$NAGSLY_DIR/events.d/manual.json"
   run "$BIN" list
   [ "$status" -ne 0 ]
-  [[ "$output" == *"error reading events"* ]]
+  [[ "$output" == *"error reading events"* ]] || false
   run "$BIN" poll
   [ "$status" -ne 0 ]
 }
@@ -139,7 +139,7 @@ build_gws() {
   printf '{"events":[]}' | "$BIN" build gws
   run "$BIN" list
   [ "$status" -eq 0 ]
-  [[ "$output" == "no upcoming events" ]]
+  [[ "$output" == "no upcoming events" ]] || false
 }
 
 @test "lowercase eventType/status (real API casing) is handled" {
@@ -152,10 +152,10 @@ build_gws() {
     {"summary":"OooDrop","eventType":"outOfOffice","status":"confirmed","start":{"dateTime":"2026-07-16T13:00:00-05:00"},"organizer":{"email":"me@x","self":true}}
   ]}' | "$BIN" build gws
   run "$BIN" list
-  [[ "$output" == *"Lower"* ]]
-  [[ "$output" == *"FocusLower"* ]]
-  [[ "$output" == *"FocusUpper"* ]]
-  [[ "$output" != *"OooDrop"* ]]
+  [[ "$output" == *"Lower"* ]] || false
+  [[ "$output" == *"FocusLower"* ]] || false
+  [[ "$output" == *"FocusUpper"* ]] || false
+  [[ "$output" != *"OooDrop"* ]] || false
 }
 
 # ── event id (stable across re-fetch) ────────────────────────────────────────
@@ -174,35 +174,35 @@ build_gws() {
   run "$BIN" add "Manual mtg" "2026-07-16T14:00:00-05:00"
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" == *"14:00  Manual mtg"* ]]
-  [[ "$output" == *"[manual]"* ]]
+  [[ "$output" == *"14:00"*"Manual mtg"* ]] || false
+  [[ "$output" == *"[manual]"* ]] || false
 }
 
 @test "add with HH:MM resolves to today at that local time" {
   run "$BIN" add "Today thing" "23:45"
   [ "$status" -eq 0 ]
   run cat "$NAGSLY_DIR/events.d/manual.json"
-  [[ "$output" == *'"start":"2026-07-13T23:45:00-05:00"'* ]]
+  [[ "$output" == *'"start":"2026-07-13T23:45:00-05:00"'* ]] || false
 }
 
 @test "add with 'tomorrow HH:MM' resolves to the next day" {
   run "$BIN" add "Tomorrow thing" "tomorrow 09:30"
   [ "$status" -eq 0 ]
   run cat "$NAGSLY_DIR/events.d/manual.json"
-  [[ "$output" == *'"start":"2026-07-14T09:30:00-05:00"'* ]]
+  [[ "$output" == *'"start":"2026-07-14T09:30:00-05:00"'* ]] || false
 }
 
 @test "add rejects an unparseable when" {
   run "$BIN" add "Bad" "half past noon"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not parse"* ]]
+  [[ "$output" == *"could not parse"* ]] || false
 }
 
 @test "add escapes a title containing a double quote" {
   run "$BIN" add 'Say "hi"' "2026-07-16T10:00:00-05:00"
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" == *'Say "hi"'* ]]
+  [[ "$output" == *'Say "hi"'* ]] || false
 }
 
 @test "rm removes a manual event by id" {
@@ -213,15 +213,15 @@ build_gws() {
   run "$BIN" rm "$id"
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" != *"Removable"* ]]
+  [[ "$output" != *"Removable"* ]] || false
 }
 
 @test "rm of an unknown id reports not found, leaves store intact" {
   "$BIN" add "Keep me" "2026-07-16T10:00:00-05:00"
   run "$BIN" rm deadbeefdead
-  [[ "$output" == *"no manual event with id"* ]]
+  [[ "$output" == *"no manual event with id"* ]] || false
   run "$BIN" list
-  [[ "$output" == *"Keep me"* ]]
+  [[ "$output" == *"Keep me"* ]] || false
 }
 
 @test "clear with no arg wipes only manual, leaves fetched sources" {
@@ -230,8 +230,8 @@ build_gws() {
   run "$BIN" clear
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" != *"Manual one"* ]]
-  [[ "$output" == *"All hands - Q3 kickoff"* ]]   # gws source survived
+  [[ "$output" != *"Manual one"* ]] || false
+  [[ "$output" == *"All hands - Q3 kickoff"* ]] || false   # gws source survived
 }
 
 @test "clear <source> wipes that source" {
@@ -239,7 +239,7 @@ build_gws() {
   run "$BIN" clear gws
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" == "no upcoming events" ]]
+  [[ "$output" == "no upcoming events" ]] || false
 }
 
 # ── per-source merge ─────────────────────────────────────────────────────────
@@ -250,8 +250,8 @@ build_gws() {
   "$BIN" add "Interleaved" "2026-07-15T11:00:00-05:00"
   run "$BIN" list
   # Order: Eng mgrs(07-14) < Eng Forum(07-15 10) < Interleaved(11) < Change(12) < All hands
-  [[ "${lines[2]}" == *"Interleaved"* ]]
-  [[ "${lines[2]}" == *"[manual]"* ]]
+  [[ "${lines[2]}" == *"Interleaved"* ]] || false
+  [[ "${lines[2]}" == *"[manual]"* ]] || false
 }
 
 # ── the alarm engine: inline fire-window + dry-run ───────────────────────────
@@ -282,8 +282,8 @@ seed_double_booked() {
   seed_meeting $(( 17 * 3600 ))
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" != *"WOULD fire"* ]]
-  [[ "$output" == *"Soon"* ]]   # still reported as next
+  [[ "$output" != *"WOULD fire"* ]] || false
+  [[ "$output" == *"Soon"* ]] || false   # still reported as next
 }
 
 @test "next fires the alarm once the meeting is inside the alarm lead" {
@@ -292,7 +292,7 @@ seed_double_booked() {
   seed_meeting 30
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" == *"WOULD fire alarm"* ]]
+  [[ "$output" == *"WOULD fire alarm"* ]] || false
 }
 
 @test "does not fire once the meeting has already started" {
@@ -301,7 +301,7 @@ seed_double_booked() {
   seed_meeting -10
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" != *"WOULD fire"* ]]
+  [[ "$output" != *"WOULD fire"* ]] || false
 }
 
 @test "fire is idempotent: an already-fired mode is not fired again" {
@@ -313,7 +313,7 @@ seed_double_booked() {
   printf 'alarm\t%s\t09:59\tSoon\n' "$epoch" > "$NAGSLY_DIR/state/fired-alarm-$epoch"
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" != *"WOULD fire alarm"* ]]
+  [[ "$output" != *"WOULD fire alarm"* ]] || false
 }
 
 @test "poll fires inline and writes a fired-marker (dry, no audio)" {
@@ -342,7 +342,7 @@ seed_double_booked() {
 @test "fire respects mode toggles (alarm off => alarm not fired)" {
   seed_meeting 30
   ALARM_ENABLED=0 run "$BIN" next
-  [[ "$output" != *"WOULD fire alarm"* ]]
+  [[ "$output" != *"WOULD fire alarm"* ]] || false
 }
 
 @test "double-booked: both meeting titles are named in a single alarm" {
@@ -353,9 +353,9 @@ seed_double_booked() {
   seed_double_booked 30
   run "$BIN" next
   [ "$status" -eq 0 ]
-  [[ "$output" == *"WOULD fire alarm"* ]]
-  [[ "$output" == *"Standup"* ]]
-  [[ "$output" == *"1:1 with Sam"* ]]
+  [[ "$output" == *"WOULD fire alarm"* ]] || false
+  [[ "$output" == *"Standup"* ]] || false
+  [[ "$output" == *"1:1 with Sam"* ]] || false
 }
 
 @test "double-booked: one fired-marker per (mode,epoch) covers both meetings" {
@@ -368,7 +368,7 @@ seed_double_booked() {
   [ -f "$NAGSLY_DIR/state/fired-alarm-$epoch" ]
   run "$BIN" poll
   [ "$status" -eq 0 ]
-  [[ "$output" != *"DRY fire alarm"* ]]   # marker present => no second fire
+  [[ "$output" != *"DRY fire alarm"* ]] || false   # marker present => no second fire
 }
 
 # ── alarm fire wiring (no real audio) ────────────────────────────────────────
@@ -455,8 +455,8 @@ EOF
   run env -u NAGSLY_DRY_FIRE PATH="$stub:$PATH" ALERTER=alerter \
     ALARM_TIMEOUT=5 ALARM_GAP=3 TOAST_ENABLED=0 "$BIN" poll
   [ "$status" -eq 0 ]
-  [[ "$output" != *"Terminated"* ]]
-  [[ "$output" != *"deadline"* ]]   # the leaked loop body
+  [[ "$output" != *"Terminated"* ]] || false
+  [[ "$output" != *"deadline"* ]] || false   # the leaked loop body
 }
 
 @test "alarm_gap is read from config and passed to the loop" {
@@ -476,9 +476,9 @@ EOF
   seed_meeting $(( 2 * 3600 ))
   run "$BIN" status
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Soon"* ]]
-  [[ "$output" == *"modes:"* ]]
-  [[ "$output" == *"feed:"* ]]
+  [[ "$output" == *"Soon"* ]] || false
+  [[ "$output" == *"modes:"* ]] || false
+  [[ "$output" == *"feed:"* ]] || false
 }
 
 # ── logs ─────────────────────────────────────────────────────────────────────
@@ -494,11 +494,11 @@ LOG
   run "$BIN" logs
   [ "$status" -eq 0 ]
   # heartbeat summary line (count + span), heartbeats themselves suppressed
-  [[ "$output" == *"2 heartbeats"* ]]
-  [[ "$output" != *"modes: toast alarm"* ]]   # the chatty 'checked' lines are hidden
+  [[ "$output" == *"2 heartbeats"* ]] || false
+  [[ "$output" != *"modes: toast alarm"* ]] || false   # the chatty 'checked' lines are hidden
   # activity — good AND bad — shown
-  [[ "$output" == *"firing toast for 'X'"* ]]
-  [[ "$output" == *"ERROR reading events"* ]]
+  [[ "$output" == *"firing toast for 'X'"* ]] || false
+  [[ "$output" == *"ERROR reading events"* ]] || false
 }
 
 @test "logs shows most-recent activity first" {
@@ -510,7 +510,7 @@ LOG
   run "$BIN" logs
   [ "$status" -eq 0 ]
   # NEWER must appear before OLDER in the output
-  [[ "$output" == *"NEWER"*"OLDER"* ]]
+  [[ "$output" == *"NEWER"*"OLDER"* ]] || false
 }
 
 @test "logs survives a large log (no SIGPIPE from grep|head under pipefail)" {
@@ -526,14 +526,382 @@ LOG
   } > "$NAGSLY_DIR/nagsly.log"
   run "$BIN" logs
   [ "$status" -eq 0 ]
-  [[ "$output" == *"heartbeats"* ]]
-  [[ "$output" == *"firing toast for 'X'"* ]]
+  [[ "$output" == *"heartbeats"* ]] || false
+  [[ "$output" == *"firing toast for 'X'"* ]] || false
 }
 
 @test "logs is graceful when no log exists yet" {
   run "$BIN" logs
   [ "$status" -eq 0 ]
-  [[ "$output" == *"no log yet"* ]]
+  [[ "$output" == *"no log yet"* ]] || false
+}
+
+# ── scheduled sync ────────────────────────────────────────────────────────────
+
+@test "sync runs configured integration when due and records the attempt" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  cat > "$pdir/nagsly-sync-fake" <<EOF
+#!/usr/bin/env bash
+echo called >> "$TEST_DIR/sync.calls"
+EOF
+  chmod +x "$pdir/nagsly-sync-fake"
+  printf '{"sync_plugins":["fake"],"sync_every":{"fake":120}}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/sync.calls" | tr -d ' ')" -eq 1 ]
+  PATH="$pdir:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/sync.calls" | tr -d ' ')" -eq 1 ]
+}
+
+@test "sync supports hyphenated integration names" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  # Config keys support hyphens; they are quoted in the SuperDB field lookup.
+  cat > "$pdir/nagsly-sync-my-calendar" <<EOF
+#!/usr/bin/env bash
+echo called >> "$TEST_DIR/sync.calls"
+EOF
+  chmod +x "$pdir/nagsly-sync-my-calendar"
+  printf '{"sync_plugins":["my-calendar"],"sync_every":{"my-calendar":120}}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/sync.calls" | tr -d ' ')" -eq 1 ]
+}
+
+@test "manual sync checks integrations regardless of their interval" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  cat > "$pdir/nagsly-sync-fake" <<EOF
+#!/usr/bin/env bash
+echo called >> "$TEST_DIR/sync.calls"
+EOF
+  chmod +x "$pdir/nagsly-sync-fake"
+  printf '{"sync_plugins":["fake"],"sync_every":{"fake":120}}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PATH" run "$BIN" sync --due
+  PATH="$pdir:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/sync.calls" | tr -d ' ')" -eq 2 ]
+}
+
+@test "sync records a failed attempt and continues with later integrations" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$pdir/nagsly-sync-broken"
+  cat > "$pdir/nagsly-sync-good" <<EOF
+#!/usr/bin/env bash
+echo called >> "$TEST_DIR/good.calls"
+EOF
+  chmod +x "$pdir/nagsly-sync-broken" "$pdir/nagsly-sync-good"
+  printf '{"sync_plugins":["broken","good"],"sync_every":{"broken":120,"good":120}}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [ -f "$TEST_DIR/good.calls" ]
+  [ -f "$NAGSLY_DIR/state/sync-broken.json" ]
+  [[ "$output" == *"broken"* ]] || false
+}
+
+@test "sync reports absent integrations as failed attempts" {
+  printf '{"sync_plugins":["not-installed"]}' > "$NAGSLY_DIR/config.json"
+  run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not-installed"* ]] || false
+  [ -f "$NAGSLY_DIR/state/sync-not-installed.json" ]
+}
+
+@test "sync times out and terminates a hung integration process group" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  cat > "$pdir/nagsly-sync-slow" <<EOF
+#!/usr/bin/env bash
+sleep 30 &
+echo \$! > "$TEST_DIR/child.pid"
+wait
+EOF
+  chmod +x "$pdir/nagsly-sync-slow"
+  printf '{"sync_plugins":["slow"]}' > "$NAGSLY_DIR/config.json"
+  NAGSLY_SYNC_TIMEOUT=1 PATH="$pdir:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"timed out"* ]] || false
+  [ -f "$TEST_DIR/child.pid" ]
+  local child_pid
+  child_pid="$(<"$TEST_DIR/child.pid")"
+  sleep 0.2
+  ! kill -0 "$child_pid" 2>/dev/null
+  [ -f "$NAGSLY_DIR/state/sync-slow.json" ]
+}
+
+@test "status reports recorded integration health" {
+  mkdir -p "$NAGSLY_DIR/state"
+  printf '{"last_attempt":1783999900,"last_success":1783999800,"last_error":7}' \
+    > "$NAGSLY_DIR/state/sync-fake.json"
+  run "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fake: attempt 1783999900, success 1783999800, error 7"* ]] || false
+}
+
+@test "sync refuses a plugin name that could alter paths or command names" {
+  printf '{"sync_plugins":["../escape"]}' > "$NAGSLY_DIR/config.json"
+  run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid integration name"* ]] || false
+  [ ! -e "$NAGSLY_DIR/state/../sync-escape.json" ]
+}
+
+@test "sync rejects intervals below the one-minute scheduler floor" {
+  printf '{"sync_plugins":["fake"],"sync_every":{"fake":10}}' > "$NAGSLY_DIR/config.json"
+  run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"integer >= 60"* ]] || false
+}
+
+@test "sync rejects excessively large intervals without arithmetic evaluation" {
+  printf '{"sync_plugins":["fake"],"sync_every":{"fake":999999999999999999999999}}' > "$NAGSLY_DIR/config.json"
+  run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"integer >= 60"* ]] || false
+}
+
+@test "sync timeout rejects excessive values" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\\nexit 0\\n' > "$pdir/nagsly-sync-fake"
+  chmod +x "$pdir/nagsly-sync-fake"
+  printf '{"sync_plugins":["fake"]}' > "$NAGSLY_DIR/config.json"
+  NAGSLY_SYNC_TIMEOUT=999999999999 PATH="$pdir:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"integer from 1 to 3600"* ]] || false
+}
+
+@test "pr registers a monitor through the standalone monitor adapter" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2 $3" == "pr view 123" ]]; then
+  printf '{"number":123,"title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}\n'
+elif [[ "$1 $2" == "pr checks" ]]; then
+  printf '[{"bucket":"pass"}]\n'
+else
+  exit 2
+fi
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  [ "$status" -eq 0 ]
+  local -a monitor_files=("$NAGSLY_DIR/monitors.d"/pr-*.json)
+  [ "${#monitor_files[@]}" -eq 1 ]
+  grep -q '"number":"123"' "${monitor_files[0]}"
+  [[ "$output" == *"registered PR #123"* ]] || false
+}
+
+@test "pr with no ref resolves the current branch without passing an empty argument" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2 $3" == "pr view --json" ]]; then
+  printf '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123"}\n'
+else exit 2; fi
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr
+  [ "$status" -eq 0 ]
+  [ -f "$NAGSLY_DIR/monitors.d/pr-$(printf '%s' 'https://github.com/acme/app/pull/123' | shasum -a 256 | cut -c1-12).json" ]
+}
+
+@test "gmail query builder scopes every search to sent mail" {
+  run bash -c 'source "$1"; build_query "release review"' _ "$PWD/plugins/nagsly-monitor-gmail"
+  [ "$status" -eq 0 ]
+  [ "$output" = "in:sent release review" ]
+  run bash -c 'source "$1"; build_query "team@example.com"' _ "$PWD/plugins/nagsly-monitor-gmail"
+  [ "$status" -eq 0 ]
+  [ "$output" = "in:sent to:team@example.com" ]
+  run bash -c 'source "$1"; build_query "subject:launch after:2026/01/01"' _ "$PWD/plugins/nagsly-monitor-gmail"
+  [ "$status" -eq 0 ]
+  [ "$output" = "in:sent subject:launch after:2026/01/01" ]
+}
+
+@test "gmail registers a sent message thread monitor and sync detects a reply once" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+case "$2 $3 $4" in
+  "users messages list")
+    printf '%s\n' "$*" >> "$NAGSLY_DIR/gws.args"
+    printf '{"messages":[{"id":"msg-1","threadId":"thread-1"}]}\n' ;;
+  "users messages get") printf '{"id":"msg-1","threadId":"thread-1","payload":{"headers":[{"name":"Subject","value":"Launch review"},{"name":"To","value":"team@example.com"}]}}\n' ;;
+  "users threads get") printf '{"messages":[{"labelIds":["INBOX"],"snippet":"Looks good","payload":{"headers":[{"name":"From","value":"reviewer@example.com"},{"name":"Subject","value":"Re: Launch review"}]}}]}\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+  cat > "$pdir/alerter" <<EOF
+#!/usr/bin/env bash
+echo notify >> "$TEST_DIR/gmail-notifies"
+EOF
+  chmod +x "$pdir/gws" "$pdir/alerter"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" gmail sarah@example.com
+  [ "$status" -eq 0 ]
+  grep -q 'in:sent to:sarah@example.com' "$NAGSLY_DIR/gws.args"
+  local -a monitor_files=("$NAGSLY_DIR/monitors.d"/gmail-*.json)
+  [ "${#monitor_files[@]}" -eq 1 ]
+  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/gmail-notifies"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/gmail-notifies" | tr -d ' ')" -eq 1 ]
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/gmail-notifies" | tr -d ' ')" -eq 1 ]
+  [ "$(super -dynamic -f line -c 'values status' "${monitor_files[0]}")" = "replied" ]
+}
+
+@test "gmail refuses a missing thread ID without storing a monitor" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$4" == list ]]; then printf '{"messages":[{"id":"msg-1"}]}\n'
+else printf '{"id":"msg-1","payload":{"headers":[]}}\n'; fi
+EOF
+  chmod +x "$pdir/gws"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" gmail sarah@example.com
+  [ "$status" -ne 0 ]
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
+}
+
+@test "monitor list displays registered monitors and rm removes by id" {
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"pr-deadbeef","kind":"pr","title":"Ship nagsly","status":"waiting","url":"https://github.com/acme/app/pull/123"}\n' \
+    > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  run "$BIN" monitor list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pr-deadbeef"*"pr"*"waiting"*"Ship nagsly"* ]] || false
+  run "$BIN" monitor rm pr-deadbeef
+  [ "$status" -eq 0 ]
+  [ ! -f "$NAGSLY_DIR/monitors.d/pr-deadbeef.json" ]
+}
+
+@test "PR and Gmail sync succeed when no monitors are registered" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$pdir/gh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$pdir/gws"
+  chmod +x "$pdir/gh" "$pdir/gws"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"sync_plugins":["pr","gmail"]}' > "$NAGSLY_DIR/config.json"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+}
+
+@test "PR sync detects a merge, notifies once, and retains completed monitor" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
+  chmod +x "$pdir/nagsly-monitor-pr"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "pr view" ]]; then
+  printf '{"number":123,"title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","state":"MERGED","reviewDecision":"APPROVED","isDraft":false}\n'
+elif [[ "$1 $2" == "pr checks" ]]; then
+  printf '[]\n'
+else exit 2; fi
+EOF
+  cat > "$pdir/alerter" <<EOF
+#!/usr/bin/env bash
+echo notify >> "$TEST_DIR/notifies"
+EOF
+  chmod +x "$pdir/gh" "$pdir/alerter"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting","every":60}\n' \
+    > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  printf '{"sync_plugins":["pr"],"sync_every":{"pr":120}}' > "$NAGSLY_DIR/config.json"
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifies"
+  NAGSLY_NOW=1784000000 PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
+  NAGSLY_NOW=1784000120 PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
+  [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "merged" ]
+}
+
+@test "PR sync does not commit a state transition when gh checks fail unexpectedly" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n'
+else exit 1; fi
+EOF
+  chmod +x "$pdir/gh" "$pdir/nagsly-monitor-pr"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "waiting" ]
+}
+
+@test "PR sync rejects malformed gh checks output without advancing approval" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n'
+else printf '{"bucket":"pass"}\n'; fi
+EOF
+  chmod +x "$pdir/gh"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "waiting" ]
+}
+
+@test "PR sync reports notification failure and leaves transition retryable" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2" == view ]]; then printf '{"state":"MERGED","reviewDecision":"APPROVED","isDraft":false}\n'
+else printf '[]\n'; fi
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  # Override dry-fire only with stubbed notification/audio executables.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$pdir/afplay"
+  chmod +x "$pdir/gh" "$pdir/alerter" "$pdir/afplay" "$pdir/nagsly-monitor-pr"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"alerter failed"* ]] || false
+  [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "waiting" ]
+}
+
+@test "re-registering a completed PR does not reset its stored state" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123","state":"MERGED"}\n'
+EOF
+  chmod +x "$pdir/gh"
+  local id="pr-$(printf '%s' 'https://github.com/acme/app/pull/123' | shasum -a 256 | cut -c1-12)"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"%s","kind":"pr","number":"123","status":"merged","last_state":"merged"}\n' "$id" > "$NAGSLY_DIR/monitors.d/$id.json"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  [ "$status" -eq 0 ]
+  [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/$id.json")" = merged ]
+}
+
+@test "PR registration deduplicates by PR URL and escapes JSON strings" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"number":123,"title":"Ship \"it\"","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}'
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  [ "$status" -eq 0 ]
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" pr 123
+  [ "$status" -eq 0 ]
+  local -a monitor_files=("$NAGSLY_DIR/monitors.d"/pr-*.json)
+  [ "${#monitor_files[@]}" -eq 1 ]
+  super -dynamic -f line -c 'values title' "${monitor_files[0]}" | grep -q 'Ship "it"'
 }
 
 # ── plugin dispatch ──────────────────────────────────────────────────────────
@@ -550,8 +918,8 @@ EOF
   PATH="$pdir:$PATH" run "$BIN" fetch fake
   [ "$status" -eq 0 ]
   run "$BIN" list
-  [[ "$output" == *"[fake]"* ]]
-  [[ "$output" == *"All hands - Q3 kickoff"* ]]
+  [[ "$output" == *"[fake]"* ]] || false
+  [[ "$output" == *"All hands - Q3 kickoff"* ]] || false
 }
 
 @test "fetch fails cleanly when the plugin is not on PATH, and lists options" {
@@ -559,9 +927,9 @@ EOF
   printf '#!/usr/bin/env bash\n' > "$pdir/nagsly-fetch-fake"; chmod +x "$pdir/nagsly-fetch-fake"
   PATH="$pdir:$PATH" run "$BIN" fetch nonexistent-source
   [ "$status" -ne 0 ]
-  [[ "$output" == *"plugin not found"* ]]
-  [[ "$output" == *"available plugins:"* ]]
-  [[ "$output" == *"fake"* ]]      # discovered plugin is listed
+  [[ "$output" == *"plugin not found"* ]] || false
+  [[ "$output" == *"available plugins:"* ]] || false
+  [[ "$output" == *"fake"* ]] || false      # discovered plugin is listed
 }
 
 @test "fetch with no plugin name lists the available plugins" {
@@ -569,8 +937,8 @@ EOF
   printf '#!/usr/bin/env bash\n' > "$pdir/nagsly-fetch-fake"; chmod +x "$pdir/nagsly-fetch-fake"
   PATH="$pdir:$PATH" run "$BIN" fetch
   [ "$status" -ne 0 ]
-  [[ "$output" == *"fetch needs a plugin name"* ]]
-  [[ "$output" == *"fake"* ]]
+  [[ "$output" == *"fetch needs a plugin name"* ]] || false
+  [[ "$output" == *"fake"* ]] || false
 }
 
 # (No test for the "zero plugins installed" hint: the binary's PATH self-heal

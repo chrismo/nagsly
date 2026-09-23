@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Register and check Gmail reply monitors. Requires gws, jq, and alerter (optional).
+set -euo pipefail
+CONFIG_DIR="${NAGSLY_DIR:-$HOME/.config/nagsly}"
+MONITORS_D="$CONFIG_DIR/monitors.d"
+GWS="${GWS:-gws}"
+GMAIL_WEB_BASE="${GMAIL_WEB_BASE:-https://mail.google.com/mail/u/0/#all/}"
+
+json_quote() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
+field() { super -dynamic -f line -c "coalesce($2, \"\")" - <<<"$1"; }
+build_query() {
+  local arg="${1:-}"
+  [[ -z "$arg" ]] && { echo 'in:sent'; return; }
+  if [[ "$arg" == *@* && "$arg" != *" "* ]]; then echo "in:sent to:$arg"
+  elif [[ "$arg" == *:* || "$arg" == *" "* ]]; then echo "in:sent $arg"
+  else echo "in:sent subject:$arg"; fi
+}
+gws_call() { "$GWS" "$@"; }
+
+register() {
+  local query_arg="${1:-}" query list ids msg id thread_id subject to chosen url stable_id file
+  command -v "$GWS" >/dev/null 2>&1 || { echo "nagsly gmail: $GWS not found" >&2; return 127; }
+  command -v jq >/dev/null 2>&1 || { echo 'nagsly gmail: jq not found' >&2; return 127; }
+  command -v super >/dev/null 2>&1 || { echo 'nagsly gmail: super not found' >&2; return 127; }
+  query="$(build_query "$query_arg")"
+  local params
+  params="$(printf '{"userId":"me","q":%s,"maxResults":6}' "$(json_quote "$query")")"
+  list="$(gws_call gmail users messages list --params "$params")" || {
+    echo 'nagsly gmail: search failed (check gws Gmail read-only auth)' >&2; return 1;
+  }
+  ids="$(jq -r '.messages // [] | map(.id // empty) | join(" ")' <<<"$list")"
+  [[ -n "$ids" ]] || { echo "nagsly gmail: no sent mail matches '$query'" >&2; return 1; }
+  local -a idarr; IFS=' ' read -r -a idarr <<< "$ids"; chosen="${idarr[0]}"
+  if (( ${#idarr[@]} > 1 )); then
+    local i=0 pick
+    for id in "${idarr[@]}"; do
+      msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$id\",\"format\":\"metadata\"}")"
+      i=$((i + 1))
+      subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
+      to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
+      printf '  %d. %s  (to %s)\n' "$i" "$subject" "$to"
+    done
+    printf 'Choose message 1-%d [1]: ' "${#idarr[@]}"
+    read -r pick || pick=1; pick="${pick:-1}"
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#idarr[@]} )); then
+      echo "nagsly gmail: invalid selection '$pick'" >&2; return 2
+    fi
+    chosen="${idarr[$((pick - 1))]}"
+  fi
+  thread_id="$(jq -er --arg id "$chosen" '.messages[] | select(.id == $id) | .threadId | select(type == "string" and length > 0)' <<<"$list")" || {
+    echo 'nagsly gmail: search returned no usable thread ID' >&2; return 1;
+  }
+  msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$chosen\",\"format\":\"metadata\"}")"
+  subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
+  to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
+  stable_id="gmail-$(printf '%s' "$thread_id" | shasum -a 256 | cut -c1-12)"
+  url="$GMAIL_WEB_BASE$thread_id"
+  mkdir -p "$MONITORS_D"
+  file="$MONITORS_D/$stable_id.json"
+  if [[ -f "$file" ]]; then
+    printf 'nagsly: Gmail thread already registered (%s); use nagsly monitor rm %s to reset\n' "$stable_id" "$stable_id"
+    return 0
+  fi
+  printf '{"id":"%s","kind":"gmail","thread_id":%s,"title":%s,"to":%s,"url":%s,"status":"waiting","last_state":"waiting"}\n' \
+    "$stable_id" "$(json_quote "$thread_id")" "$(json_quote "$subject")" "$(json_quote "$to")" "$(json_quote "$url")" > "$file.tmp.$$"
+  mv -f "$file.tmp.$$" "$file"
+  printf 'nagsly: registered Gmail thread "%s" (%s)\n' "$subject" "$stable_id"
+}
+
+derive_state() {
+  jq -r 'if (.messages | length)==0 then "waiting" else (.messages[-1].labelIds // [] | if index("SENT")!=null or index("DRAFT")!=null then "waiting" else "replied" end) end' <<<"$1"
+}
+notify_reply() {
+  local title="$1" url="$2" body="$3"
+  if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "reply" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
+  [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
+  if ! command -v alerter >/dev/null 2>&1; then
+    echo 'nagsly-sync-gmail: alerter not found; cannot notify reply' >&2
+    return 1
+  fi
+  local clicked
+  if clicked="$(alerter --title "$title" --message "$body" --actions 'Open Thread' --timeout 30 2>&1)"; then
+    if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]] && command -v open >/dev/null 2>&1; then
+      open "$url" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "nagsly-sync-gmail: alerter failed: $clicked" >&2
+    return 1
+  fi
+  if [[ -f /System/Library/Sounds/Glass.aiff ]] && command -v afplay >/dev/null 2>&1; then
+    afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 || {
+      echo 'nagsly-sync-gmail: afplay failed' >&2
+      return 1
+    }
+  fi
+}
+
+sync_monitors() {
+  command -v "$GWS" >/dev/null 2>&1 || { echo "nagsly-sync-gmail: $GWS not found" >&2; return 127; }
+  command -v jq >/dev/null 2>&1 || { echo 'nagsly-sync-gmail: jq not found' >&2; return 127; }
+  [[ -d "$MONITORS_D" ]] || return 0
+  shopt -s nullglob
+  local files=("$MONITORS_D"/gmail-*.json)
+  shopt -u nullglob
+  (( ${#files[@]} > 0 )) || return 0
+  local file monitor id thread_id title url previous status snapshot state updated who subject snippet thread_params
+  for file in "${files[@]}"; do
+    monitor="$(<"$file")"
+    id="$(field "$monitor" id)"; thread_id="$(field "$monitor" thread_id)"
+    title="$(field "$monitor" title)"; url="$(field "$monitor" url)"
+    previous="$(field "$monitor" last_state)"; status="$(field "$monitor" status)"
+    [[ "$status" == replied ]] && continue
+    thread_params="$(printf '{"userId":"me","id":%s,"format":"metadata"}' "$(json_quote "$thread_id")")"
+    snapshot="$(gws_call gmail users threads get --params "$thread_params")" || {
+      echo "nagsly-sync-gmail: failed to read thread $thread_id" >&2; return 1;
+    }
+    state="$(derive_state "$snapshot")"
+    if [[ "$state" == replied && "$previous" != replied ]]; then
+      who="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="From") | .value) | .[0]) // "someone"' <<<"$snapshot")"
+      subject="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="Subject") | .value) | .[0]) // ""' <<<"$snapshot")"
+      snippet="$(jq -r '.messages[-1].snippet // ""' <<<"$snapshot")"
+      if ! notify_reply "$title" "$url" "Reply from $who${subject:+ — $subject}${snippet:+: $snippet}"; then
+        return 1
+      fi
+      printf 'nagsly: reply received from %s — %s\n' "$who" "$url"
+    fi
+    updated="$MONITORS_D/.$(basename "$file").tmp.$$"
+    local state_json; state_json="$(json_quote "$state")"
+    super -dynamic -f json -c "put last_state := $state_json | put status := $state_json" "$file" > "$updated"
+    mv -f "$updated" "$file"
+  done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    --register) shift; register "${1:-}" ;;
+    --sync) sync_monitors ;;
+    -h|--help|help) echo 'Usage: nagsly gmail [recipient|Gmail query]'; exit 0 ;;
+    *) register "${1:-}" ;;
+  esac
+fi

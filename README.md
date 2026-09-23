@@ -10,9 +10,12 @@ heads-down.
 
 - **Core** = a per-source JSON event store + an alarm engine. No calendar
   dependency; you can `nagsly add` events by hand and it will alarm on them.
-- **Plugins** (`nagsly-fetch-<name>` on PATH) populate events from real
-  calendars. `nagsly-fetch-gws` is the standalone Google Calendar feeder (built
-  on the [Google Workspace CLI](https://github.com/googleworkspace/cli)).
+- **Calendar fetch plugins** (`nagsly-fetch-<name>` on PATH) populate events
+  from calendars. `nagsly-fetch-gws` is the standalone Google Calendar feeder
+  (built on the [Google Workspace CLI](https://github.com/googleworkspace/cli)).
+- **Sync integrations** (`nagsly-sync-<name>` on PATH) perform one bounded
+  network check when the core scheduler says they are due. PR and Gmail monitors
+  use `gh` and the Google Workspace CLI respectively.
 - One binary, git-style subcommands.
 
 ```
@@ -24,7 +27,13 @@ nagsly clear [source]         # wipe a source's file (default: manual)
 nagsly poll                   # launchd entry point: arm the next meeting
 nagsly status                 # read-only "is it working" rollup
 nagsly stop                   # silence a currently-firing alarm
-nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH
+nagsly fetch <name> [args]    # manually run nagsly-fetch-<name> on PATH
+nagsly sync                   # check all configured integrations now
+nagsly sync --due             # scheduler mode: check only due integrations
+nagsly pr <number|URL|branch> # monitor a GitHub PR until merged/closed
+nagsly gmail [recipient|query] # monitor a sent Gmail thread for a reply
+nagsly monitor list           # list pending and completed monitors
+nagsly monitor rm <id>        # remove a monitor
 ```
 
 ## How it fires
@@ -52,12 +61,33 @@ dismissal), the alerter's Stop action, or just wait out the auto-timeout.
 ```bash
 ./install.sh          # copies the binary + plugins to ~/.local/bin, seeds
                       # ~/.config/nagsly/config.json, loads the launchd agent
-nagsly status         # confirm it's loaded
+nagsly status         # confirm alarm + sync agents are loaded
 nagsly add "Test" +2m # a manual event to prove firing end-to-end
 ```
 
-`./install.sh --uninstall` removes the agent and installed files (leaves your
+`./install.sh --uninstall` removes both agents and installed files (leaves your
 config + events intact).
+
+## PR and Gmail monitors
+
+Register a monitor; it persists after the command exits and is checked by the
+core sync agent. State transitions produce a macOS toast (and a brief sound
+where appropriate); completed monitors remain listed until removed.
+
+```bash
+nagsly pr 123                       # PR number or URL (no argument: current branch)
+nagsly monitor list
+nagsly monitor rm <monitor-id>
+nagsly gmail sarah@example.com      # newest sent thread to this recipient
+nagsly gmail "subject:launch review" # pass through Gmail search syntax
+nagsly gmail launch                 # bare word becomes subject:launch
+```
+
+PR monitors use `gh` and classify draft/review/check/merged/closed states;
+`jq` validates the checks response before state changes are recorded.
+Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
+thread message not labelled `SENT` or `DRAFT`. Configure `sync_plugins` and
+`sync_every` to enable their regular checks (example PR/Gmail cadence: 120s).
 
 ## Calendar feed (gws plugin)
 
@@ -65,6 +95,7 @@ config + events intact).
 gws auth login        # one-time interactive OAuth (you run this)
 nagsly fetch gws      # pull the next 4 days into events.d/gws.json
 nagsly fetch gws 7    # …or N days
+nagsly sync           # refresh immediately
 ```
 
 `nagsly-fetch-gws` pulls upcoming events via the Google Workspace CLI (JSON, with
@@ -87,8 +118,11 @@ purpose and are most likely to let slip.
 
 `~/.config/nagsly/config.json` (seeded from [`config.example.json`](config.example.json)).
 Knobs: `toast_lead`, `alarm_lead`, `toast_enabled`, `alarm_enabled`, `sound_file`,
-`alarm_timeout`, `alarm_gap`. Each is also overridable via an `UPPER_SNAKE` env
-var of the same name.
+`alarm_timeout`, `alarm_gap`, `sync_plugins`, and `sync_every`. Sync cadence values
+are seconds (minimum 60); the example GWS refresh cadence is 900 seconds
+(the scheduler uses 900 when no per-integration cadence is configured).
+`NAGSLY_SYNC_TIMEOUT` bounds each integration check (default 120 seconds).
+Monitor definitions live in `monitors.d/`; scheduler health is stored in `state/`.
 
 The alarm repeats its sound until dismissed or until `alarm_timeout`, with
 `alarm_gap` seconds of silence between repeats (default **8**). Set `alarm_gap: 0`

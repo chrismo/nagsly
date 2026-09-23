@@ -12,5 +12,13 @@
   "_alarm": "sound_file: any file afplay can play; built-ins live in /System/Library/Sounds/*.aiff (Submarine, Sosumi, Ping, Glass, Funk, ...). afplay does ALL audio; alerter is visual only. alarm_timeout: hard stop for the loop if never dismissed (seconds). alarm_gap: seconds of silence between repeats — set 0 to play back-to-back (repeat rate = the sound's own length), which is frantic. The gap never pushes the loop past alarm_timeout.",
   "sound_file": "/System/Library/Sounds/Submarine.aiff",
   "alarm_timeout": 300,
-  "alarm_gap": 8
+  "alarm_gap": 8,
+
+  "_sync": "Integrations checked by the separate sync LaunchAgent. Cadences are seconds; minimum 60. Calendar refresh defaults to every 15 minutes.",
+  "sync_plugins": ["gws", "pr", "gmail"],
+  "sync_every": {
+    "gws": 900,
+    "pr": 120,
+    "gmail": 120
+  }
 }

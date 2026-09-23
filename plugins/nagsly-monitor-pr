@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Register and check GitHub PR monitors. Requires gh, super, and alerter (optional).
+set -euo pipefail
+export ASDF_SUPERDB_VERSION="${ASDF_SUPERDB_VERSION:-0.3.0}"
+CONFIG_DIR="${NAGSLY_DIR:-$HOME/.config/nagsly}"
+MONITORS_D="$CONFIG_DIR/monitors.d"
+
+json_quote() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
+field() { super -dynamic -f line -c "coalesce($2, \"\")" - <<<"$1"; }
+
+register() {
+  local ref="${1:-}"
+  command -v gh >/dev/null 2>&1 || { echo 'nagsly pr: gh not found on PATH' >&2; return 127; }
+  local view number title url id file
+  if [[ -n "$ref" ]]; then
+    view="$(gh pr view "$ref" --json number,title,url,state,reviewDecision,isDraft)" || {
+      echo "nagsly pr: cannot resolve '$ref' (run this inside a GitHub repository and authenticate gh)" >&2; return 1;
+    }
+  else
+    view="$(gh pr view --json number,title,url,state,reviewDecision,isDraft)" || {
+      echo "nagsly pr: cannot resolve current branch (run this inside a GitHub repository and authenticate gh)" >&2; return 1;
+    }
+  fi
+  number="$(super -dynamic -f line -c 'coalesce(number, "")' - <<<"$view")"
+  title="$(super -dynamic -f line -c 'coalesce(title, "")' - <<<"$view")"
+  url="$(super -dynamic -f line -c 'coalesce(url, "")' - <<<"$view")"
+  [[ "$number" =~ ^[0-9]+$ && -n "$url" ]] || { echo 'nagsly pr: gh returned an invalid PR snapshot' >&2; return 1; }
+  id="pr-$(printf '%s' "$url" | shasum -a 256 | cut -c1-12)"
+  mkdir -p "$MONITORS_D"
+  file="$MONITORS_D/$id.json"
+  if [[ -f "$file" ]]; then
+    printf 'nagsly: PR #%s already registered (%s); use nagsly monitor rm %s to reset\n' "$number" "$id" "$id"
+    return 0
+  fi
+  local jurl
+  jurl="$(json_quote "$url")"
+  printf '{"id":"%s","kind":"pr","number":"%s","title":%s,"url":%s,"status":"waiting","last_state":"waiting"}\n' \
+    "$id" "$number" "$(json_quote "$title")" "$jurl" > "$file.tmp.$$"
+  mv -f "$file.tmp.$$" "$file"
+  printf 'nagsly: registered PR #%s — %s (%s)\n' "$number" "$title" "$id"
+}
+
+pr_state() {
+  local view="$1" checks="$2" checks_rc="$3" state draft review fail pending
+  state="$(field "$view" state)"
+  [[ "$state" == MERGED ]] && { printf merged; return; }
+  [[ "$state" == CLOSED ]] && { printf closed; return; }
+  draft="$(super -dynamic -f line -c 'coalesce(isDraft, false)' - <<<"$view")"
+  [[ "$draft" == true ]] && { printf draft; return; }
+  [[ "$checks_rc" == 0 || "$checks_rc" == 8 ]] || return 1
+  # SuperDB's unnest silently produces an empty result for a non-array JSON
+  # value; validate the API shape before interpreting zero failures as green.
+  jq -e 'type == "array" and all(.[]; type == "object" and (.bucket == "pass" or .bucket == "fail" or .bucket == "pending" or .bucket == "skipping" or .bucket == "cancel"))' <<<"$checks" >/dev/null || return 1
+  fail="$(super -dynamic -f line -c 'len([unnest this | where bucket == "fail"])' - <<<"$checks")" || return 1
+  pending="$(super -dynamic -f line -c 'len([unnest this | where bucket == "pending"])' - <<<"$checks")" || return 1
+  [[ "$fail" =~ ^[0-9]{1,8}$ && "$pending" =~ ^[0-9]{1,8}$ ]] || return 1
+  (( fail > 0 )) && { printf checks_red; return; }
+  review="$(field "$view" reviewDecision)"
+  case "$review" in
+    CHANGES_REQUESTED) printf changes_requested ;;
+    APPROVED) if (( pending > 0 )); then printf approved_ci_pending; else printf approved; fi ;;
+    *) printf waiting ;;
+  esac
+}
+
+notify_transition() {
+  local state="$1" title="$2" url="$3" body sound
+  if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "$state" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
+  [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
+  case "$state" in
+    approved) body='PR approved — merge it'; sound=Glass ;;
+    approved_ci_pending) body='PR approved (CI still running)'; sound=Glass ;;
+    checks_red) body='PR checks went red'; sound=Basso ;;
+    changes_requested) body='Changes requested on the PR'; sound=Basso ;;
+    merged) body='PR merged 🎉'; sound=Glass ;;
+    closed) body='PR closed without merging'; sound=Basso ;;
+    *) return 0 ;;
+  esac
+  if ! command -v alerter >/dev/null 2>&1; then
+    echo 'nagsly-sync-pr: alerter not found; cannot notify state transition' >&2
+    return 1
+  fi
+  local clicked
+  if clicked="$(alerter --title "$title" --message "$body" --actions 'Open PR' --timeout 30 2>&1)"; then
+    if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]] && command -v open >/dev/null 2>&1; then
+      open "$url" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "nagsly-sync-pr: alerter failed: $clicked" >&2
+    return 1
+  fi
+  local snd="/System/Library/Sounds/$sound.aiff"
+  [[ -f "$snd" ]] && command -v afplay >/dev/null 2>&1 && afplay "$snd" >/dev/null 2>&1 || true
+}
+
+sync_monitors() {
+  command -v gh >/dev/null 2>&1 || { echo 'nagsly-sync-pr: gh not found' >&2; return 127; }
+  command -v jq >/dev/null 2>&1 || { echo 'nagsly-sync-pr: jq not found' >&2; return 127; }
+  [[ -d "$MONITORS_D" ]] || return 0
+  shopt -s nullglob
+  local files=("$MONITORS_D"/pr-*.json)
+  shopt -u nullglob
+  (( ${#files[@]} > 0 )) || return 0
+  local file monitor id number title url previous view checks checks_rc state status
+  for file in "${files[@]}"; do
+    monitor="$(<"$file")"
+    id="$(field "$monitor" id)"; number="$(field "$monitor" number)"
+    [[ "$number" =~ ^[0-9]+$ ]] || { echo "nagsly-sync-pr: invalid stored PR number" >&2; return 1; }
+    title="$(field "$monitor" title)"; url="$(field "$monitor" url)"
+    previous="$(field "$monitor" last_state)"
+    status="$(field "$monitor" status)"
+    [[ "$status" == merged || "$status" == closed ]] && continue
+    view="$(gh pr view "$number" --json number,title,url,state,reviewDecision,isDraft 2>/dev/null)" || {
+      echo "nagsly-sync-pr: failed to read PR #$number" >&2; return 1;
+    }
+    checks_rc=0
+    if checks="$(gh pr checks "$number" --json bucket 2>/dev/null)"; then checks_rc=0; else checks_rc=$?; fi
+    if state="$(pr_state "$view" "$checks" "$checks_rc")"; then :; else
+      echo "nagsly-sync-pr: invalid checks snapshot for PR #$number (gh exit $checks_rc)" >&2
+      return 1
+    fi
+    if [[ "$state" != "$previous" ]]; then
+      if ! notify_transition "$state" "PR #$number" "$url"; then
+        return 1
+      fi
+    fi
+    local updated
+    updated="$MONITORS_D/.$(basename "$file").tmp.$$"
+    local state_json; state_json="$(json_quote "$state")"
+    super -dynamic -f json -c "put last_state := $state_json | put status := $state_json" "$file" > "$updated"
+    mv -f "$updated" "$file"
+    # Retain terminal monitors, but continue checking the remaining open PRs.
+  done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    --register) shift; register "${1:-}" ;;
+    --sync) sync_monitors ;;
+    -h|--help|help) echo 'Usage: nagsly pr <number|URL|branch>'; exit 0 ;;
+    *) register "${1:-}" ;;
+  esac
+fi

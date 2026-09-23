@@ -7,7 +7,11 @@ holds the decisions that cost something to learn; don't re-litigate them.
 ## Layout
 
 - `bin/nagsly` — the whole tool (one bash binary, git-style subcommands)
-- `plugins/nagsly-fetch-gws` — Google Calendar feeder (Google Workspace CLI)
+- `plugins/nagsly-fetch-gws` — Google Calendar fetcher (Google Workspace CLI)
+- `plugins/nagsly-sync-gws`, `nagsly-sync-pr`, `nagsly-sync-gmail` — one-shot
+  adapters for the core sync scheduler
+- `plugins/nagsly-monitor-pr`, `plugins/nagsly-monitor-gmail` — registration and
+  state checking for GitHub/Gmail monitors
 - `test/nagsly.bats` + `test/fixtures/` — the suite
 - `install.sh`, `com.chrismo.nagsly.plist.template`
 - `specs/` — plans for un-built work
@@ -29,7 +33,9 @@ holds the decisions that cost something to learn; don't re-litigate them.
   daemon). Loaded-check uses `launchctl print gui/<uid>/<label>`, not
   `launchctl list | grep`.
 - **Config/storage is JSON** under `~/.config/nagsly/`. Per-source event files in
-  `events.d/`; a fetch overwrites its own file wholesale.
+  `events.d/`; a fetch overwrites its own file wholesale. Integration sync is
+  core-scheduled by its separate LaunchAgent; never put network work on alarm's
+  path.
 - **The all-hands-not-a-solo-hold** filter (key on `organizer.self`) and the
   **focus-time exemption** both have regression tests — keep them.
 

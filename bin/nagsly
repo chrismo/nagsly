@@ -56,6 +56,7 @@ LABEL="com.chrismo.nagsly"
 CONFIG_DIR="${NAGSLY_DIR:-$HOME/.config/nagsly}"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 EVENTS_D="$CONFIG_DIR/events.d"
+MONITORS_D="$CONFIG_DIR/monitors.d"
 STATE_DIR="$CONFIG_DIR/state"
 LOG_FILE="$CONFIG_DIR/nagsly.log"
 
@@ -369,7 +370,7 @@ day_label() {
 
 cmd_list() {
   local rows rc
-  rows="$(read_events)"; rc=$?
+  if rows="$(read_events)"; then rc=0; else rc=$?; fi
   (( rc != 0 )) && die "error reading events (see $LOG_FILE)"
   if [[ -z "$rows" ]]; then echo "no upcoming events"; return; fi
   local n; n="$(now)"
@@ -556,7 +557,7 @@ cmd_poll() {
   mkdir -p "$STATE_DIR"
   [[ "$dry" == "1" ]] || prune_markers
   local rows rc
-  rows="$(read_events)"; rc=$?
+  if rows="$(read_events)"; then rc=0; else rc=$?; fi
   if (( rc != 0 )); then
     # read_events already logged the error. Surface it, do NOT treat as empty.
     [[ "$dry" == "1" ]] && echo "ERROR reading events (see $LOG_FILE)"
@@ -672,6 +673,44 @@ do_fire() {
   esac
 }
 
+monitor_file_for_id() {
+  local id="$1"
+  [[ "$id" =~ ^(pr|gmail)-[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
+  printf '%s/%s.json' "$MONITORS_D" "$id"
+}
+
+cmd_monitor() {
+  local action="${1:-list}" file id title kind status url record
+  shift || true
+  if [[ "$action" == "list" && "${1:-}" == "rm" ]]; then action="rm"; shift; fi
+  mkdir -p "$MONITORS_D"
+  case "$action" in
+    list)
+      shopt -s nullglob
+      local files=("$MONITORS_D"/*.json)
+      shopt -u nullglob
+      if (( ${#files[@]} == 0 )); then echo "no monitors"; return 0; fi
+      for file in "${files[@]}"; do
+        record="$(<"$file")"
+        id="$(super -dynamic -f line -c 'coalesce(id, "")' - <<<"$record")" || die "unreadable monitor: $file"
+        title="$(super -dynamic -f line -c 'coalesce(title, "")' - <<<"$record")" || die "unreadable monitor: $file"
+        kind="$(super -dynamic -f line -c 'coalesce(kind, "")' - <<<"$record")" || die "unreadable monitor: $file"
+        status="$(super -dynamic -f line -c 'coalesce(status, "unknown")' - <<<"$record")" || die "unreadable monitor: $file"
+        url="$(super -dynamic -f line -c 'coalesce(url, "")' - <<<"$record")" || die "unreadable monitor: $file"
+        printf '%-20s %-7s %-22s %s  %s\n' "$id" "$kind" "$status" "$title" "$url"
+      done
+      ;;
+    rm)
+      id="${1:-}"
+      file="$(monitor_file_for_id "$id")" || die "monitor rm: invalid monitor id '$id'"
+      [[ -f "$file" ]] || die "monitor rm: no monitor '$id'"
+      rm -f "$file"
+      echo "nagsly: removed monitor $id"
+      ;;
+    *) die "monitor: expected list or rm <id>" ;;
+  esac
+}
+
 cmd_stop() {
   # Kill the alarm loop(s) first so they don't respawn afplay (match the
   # sentinel argv, NOT 'nagsly poll' — that would kill the poller), then
@@ -679,6 +718,162 @@ cmd_stop() {
   pkill -f "$ALARM_LOOP_TAG" 2>/dev/null || true
   killall afplay 2>/dev/null || true
   echo "nagsly: silenced."
+}
+
+# --- scheduled integrations --------------------------------------------------
+# Core owns the sync cadence. Each configured name maps to an executable
+# nagsly-sync-<name> on PATH. Plugins are independent: a failure is recorded
+# and reported, then the remaining integrations still run.
+sync_every() {
+  local name="$1" value
+  value="$(super -dynamic -f line -c "coalesce(sync_every[\"$name\"], 900)" "$CONFIG_FILE" 2>/dev/null)" || return 1
+  [[ "$value" =~ ^[0-9]{1,8}$ ]] || return 1
+  value=$((10#$value))
+  (( value >= 60 )) || return 1
+  printf '%s' "$value"
+}
+
+sync_plugins() {
+  [[ -f "$CONFIG_FILE" ]] || { printf 'gws'; return 0; }
+  super -dynamic -f line -c 'unnest coalesce(sync_plugins, ["gws"]) | values this' "$CONFIG_FILE"
+}
+
+sync_one() {
+  local name="$1" force="$2" every now last plugin rc state_file
+  [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
+    echo "nagsly sync: invalid integration name '$name'" >&2
+    return 1
+  }
+  if ! every="$(sync_every "$name")"; then
+    echo "nagsly sync: invalid interval for '$name' (must be an integer >= 60 seconds)" >&2
+    return 1
+  fi
+  now="$(now)"
+  state_file="$STATE_DIR/sync-$name.json"
+  last=0
+  if [[ -f "$state_file" ]]; then
+    last="$(super -dynamic -f line -c 'coalesce(last_attempt, 0)' "$state_file" 2>/dev/null)" || last=invalid
+  fi
+  if [[ ! "$last" =~ ^[0-9]+$ ]]; then
+    echo "nagsly sync: unreadable state for '$name': $state_file" >&2
+    return 1
+  fi
+  last=$((10#$last))
+  if [[ "$force" != "1" ]] && (( now - last < every )); then
+    echo "nagsly sync: $name not due (last attempt ${last}s, every ${every}s)"
+    return 0
+  fi
+  local timeout="${NAGSLY_SYNC_TIMEOUT:-120}"
+  [[ "$timeout" =~ ^[0-9]{1,4}$ ]] || {
+    echo "nagsly sync: NAGSLY_SYNC_TIMEOUT must be an integer from 1 to 3600" >&2
+    return 1
+  }
+  timeout=$((10#$timeout))
+  (( timeout >= 1 && timeout <= 3600 )) || {
+    echo "nagsly sync: NAGSLY_SYNC_TIMEOUT must be an integer from 1 to 3600" >&2
+    return 1
+  }
+  mkdir -p "$STATE_DIR"
+  local last_success=0
+  if [[ -f "$state_file" ]]; then
+    last_success="$(super -dynamic -f line -c 'coalesce(last_success, 0)' "$state_file")" || {
+      echo "nagsly sync: unreadable state for '$name': $state_file" >&2
+      return 1
+    }
+    [[ "$last_success" =~ ^[0-9]+$ ]] || {
+      echo "nagsly sync: unreadable last_success for '$name': $state_file" >&2
+      return 1
+    }
+  fi
+  last_success=$((10#$last_success))
+  printf '{"last_attempt":%s,"last_success":%s,"last_error":"running"}\n' \
+    "$now" "$last_success" > "$state_file.tmp.$$"
+  mv -f "$state_file.tmp.$$" "$state_file"
+
+  plugin="nagsly-sync-$name"
+  if ! command -v "$plugin" >/dev/null 2>&1; then
+    rc=127
+    echo "nagsly sync: integration not found on PATH: $plugin" >&2
+  else
+    rc=0
+    perl -e '
+      my $timeout = shift;
+      my $pid = fork();
+      die "fork failed: $!" unless defined $pid;
+      if ($pid == 0) {
+        setpgrp(0, 0);
+        exec @ARGV or die "exec failed: $!";
+      }
+      $SIG{ALRM} = sub {
+        kill "TERM", -$pid;
+        sleep 2;
+        kill "KILL", -$pid;
+        waitpid($pid, 0);
+        exit 124;
+      };
+      alarm $timeout;
+      waitpid($pid, 0);
+      my $status = $?;
+      exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
+    ' "$timeout" "$plugin" || rc=$?
+    if (( rc == 124 )); then echo "nagsly sync: $name timed out after ${timeout}s" >&2; fi
+  fi
+  if (( rc == 0 )); then
+    printf '{"last_attempt":%s,"last_success":%s,"last_error":null}\n' \
+      "$now" "$now" > "$state_file.tmp.$$"
+    mv -f "$state_file.tmp.$$" "$state_file"
+    echo "nagsly sync: $name checked successfully"
+  else
+    printf '{"last_attempt":%s,"last_success":%s,"last_error":%s}\n' \
+      "$now" "$last_success" "$rc" > "$state_file.tmp.$$"
+    mv -f "$state_file.tmp.$$" "$state_file"
+    echo "nagsly sync: $name failed (exit $rc)" >&2
+    return 1
+  fi
+}
+
+SYNC_LOCK_DIR=""
+sync_unlock() {
+  [[ -n "$SYNC_LOCK_DIR" ]] || return 0
+  local lock_pid=""
+  [[ -f "$SYNC_LOCK_DIR/pid" ]] && lock_pid="$(<"$SYNC_LOCK_DIR/pid")"
+  [[ "$lock_pid" == "$$" ]] && rm -rf "$SYNC_LOCK_DIR"
+  SYNC_LOCK_DIR=""
+}
+
+cmd_sync() {
+  local force=0 name rc failed=0
+  case "${1:-}" in
+    "") force=1 ;;                 # explicit user request: check all now
+    --due) force=0 ;;              # launchd path: honor each integration cadence
+    *) die "sync: unknown option '$1' (use --due)" ;;
+  esac
+  mkdir -p "$STATE_DIR"
+  local lock_dir="$STATE_DIR/sync.lock" lock_pid
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    lock_pid=""
+    [[ -f "$lock_dir/pid" ]] && lock_pid="$(<"$lock_dir/pid")"
+    if [[ "$lock_pid" =~ ^[0-9]+$ ]]; then
+      if kill -0 "$lock_pid" 2>/dev/null; then
+        echo "nagsly sync: another sync is already running (pid $lock_pid)" >&2
+      else
+        echo "nagsly sync: stale lock for pid $lock_pid; remove $lock_dir and retry" >&2
+      fi
+    else
+      echo "nagsly sync: sync lock is initializing or stale; inspect and remove $lock_dir if no sync is running" >&2
+    fi
+    return 1
+  fi
+  SYNC_LOCK_DIR="$lock_dir"
+  printf '%s\n' "$$" > "$lock_dir/pid"
+  trap sync_unlock EXIT
+  local plugins
+  plugins="$(sync_plugins)" || die "could not read sync_plugins in $CONFIG_FILE"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    sync_one "$name" "$force" || failed=1
+  done <<< "$plugins"
+  return "$failed"
 }
 
 cmd_status() {
@@ -703,10 +898,30 @@ cmd_status() {
     hb="no heartbeat log yet"
   fi
   echo "  poller: $loaded, $hb"
+  local sync_loaded
+  if launchctl print "gui/$(id -u)/com.chrismo.nagsly.sync" >/dev/null 2>&1; then
+    sync_loaded="loaded (launchd)"
+  else
+    sync_loaded="NOT loaded — run ./install.sh"
+  fi
+  echo "  sync:   $sync_loaded"
+  shopt -s nullglob
+  local sync_states=("$STATE_DIR"/sync-*.json)
+  shopt -u nullglob
+  local sf sn sa ss se
+  if (( ${#sync_states[@]} > 0 )); then
+    for sf in "${sync_states[@]}"; do
+    sn="${sf##*/sync-}"; sn="${sn%.json}"
+    sa="$(super -dynamic -f line -c 'coalesce(last_attempt, 0)' "$sf" 2>/dev/null || echo 0)"
+    ss="$(super -dynamic -f line -c 'coalesce(last_success, 0)' "$sf" 2>/dev/null || echo 0)"
+    se="$(super -dynamic -f line -c 'coalesce(last_error, "")' "$sf" 2>/dev/null || echo unreadable)"
+    echo "          $sn: attempt $sa, success $ss, error ${se:-none}"
+    done
+  fi
 
   # feed: meeting count across sources
   local rows rc count srcs
-  rows="$(read_events)"; rc=$?
+  if rows="$(read_events)"; then rc=0; else rc=$?; fi
   shopt -s nullglob
   local files=("$EVENTS_D"/*.json)
   shopt -u nullglob
@@ -770,6 +985,11 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly logs [-f]              recent fires/errors + heartbeat summary (-f: follow)
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH
+  nagsly sync [--due]           check integrations now; --due honors their cadence
+  nagsly pr <number|URL|branch>  register a PR monitor
+  nagsly gmail [recipient|query] register a Gmail reply monitor
+  nagsly monitor [list]          list active/completed monitors
+  nagsly monitor rm <id>        remove a monitor
 EOF
 }
 
@@ -785,6 +1005,14 @@ main() {
     logs)   cmd_logs "$@" ;;
     stop)   cmd_stop ;;
     fetch)  cmd_fetch "$@" ;;
+    sync)   cmd_sync "$@" ;;
+    pr)
+      local adapter="nagsly-monitor-pr"; command -v "$adapter" >/dev/null 2>&1 || die "$adapter not found on PATH"
+      "$adapter" --register "$@" ;;
+    gmail)
+      local adapter="nagsly-monitor-gmail"; command -v "$adapter" >/dev/null 2>&1 || die "$adapter not found on PATH"
+      "$adapter" --register "$@" ;;
+    monitor) cmd_monitor "$@" ;;
     # internal, not user-facing (absent from usage): `build` normalizes raw
     # source JSON for plugins; `next` is poll's dry-run, kept for the test suite
     # (it drives the fire logic without producing audio).
