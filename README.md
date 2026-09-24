@@ -29,6 +29,8 @@ nagsly rm <id>                # remove one manual event
 nagsly clear [source]         # wipe a source's file (default: manual)
 nagsly poll                   # launchd entry point: arm the next meeting
 nagsly status                 # read-only "is it working" rollup
+nagsly logs                   # heartbeat summary + activity, oldest-to-newest
+nagsly logs -f                # follow raw log, including heartbeats
 nagsly stop                   # silence a currently-firing alarm
 nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH (not calendar-only)
 nagsly sync                   # check all configured integrations now

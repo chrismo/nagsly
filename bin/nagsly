@@ -431,12 +431,11 @@ cmd_logs() {
   fi
 
   # Activity: everything that ISN'T a routine heartbeat (firing / armed / ERROR).
-  # Shown most-recent-first — the log is chronological, so reverse it. `tail -r`
-  # reads a finite printf here (not a streaming grep), so it can't SIGPIPE.
+  # Keep the log's chronological order so the most recent activity is at the bottom.
   local activity
   activity="$(grep -v 'checked —' "$LOG_FILE" 2>/dev/null || true)"
   if [[ -n "$activity" ]]; then
-    printf '%s\n' "$activity" | tail -r
+    printf '%s\n' "$activity"
   else
     echo "(no fires or errors logged yet)"
   fi
@@ -1050,7 +1049,7 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly clear [source]         wipe a source's file (default: manual)
   nagsly poll                   launchd entry point: fire modes due now
   nagsly status                 read-only "is it working" rollup
-  nagsly logs [-f]              recent fires/errors + heartbeat summary (-f: follow)
+  nagsly logs [-f]              heartbeat summary + activity, oldest-to-newest (-f: follow)
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH (any fetch plugin)
   nagsly sync [--due]           check integrations now; --due honors their cadence

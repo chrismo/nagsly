@@ -554,7 +554,7 @@ LOG
   [[ "$output" == *"ERROR reading events"* ]] || false
 }
 
-@test "logs shows most-recent activity first" {
+@test "logs shows activity in chronological order (newest at bottom)" {
   mkdir -p "$NAGSLY_DIR"
   cat > "$NAGSLY_DIR/nagsly.log" <<'LOG'
 2026-07-16 09:00:00 firing alarm for 'OLDER' @ 09:01
@@ -562,8 +562,9 @@ LOG
 LOG
   run "$BIN" logs
   [ "$status" -eq 0 ]
-  # NEWER must appear before OLDER in the output
-  [[ "$output" == *"NEWER"*"OLDER"* ]] || false
+  # The heartbeat summary stays first; activity follows in file order.
+  [[ "${lines[1]}" == *"OLDER"* ]] || false
+  [[ "${lines[2]}" == *"NEWER"* ]] || false
 }
 
 @test "logs survives a large log (no SIGPIPE from grep|head under pipefail)" {
