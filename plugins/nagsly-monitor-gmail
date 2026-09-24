@@ -22,44 +22,74 @@ build_query() {
 }
 gws_call() { "$GWS" "$@"; }
 
+# Only accept links whose last component is an API-resolvable thread ID.
+# Gmail also uses opaque browser-only IDs: the API check below rejects those
+# rather than persisting a monitor that cannot be synced.
+thread_id_from_url() {
+  local url="$1"
+  if [[ "$url" =~ ^https://mail\.google\.com/mail/u/[0-9]+/\#(all|sent|inbox)/([a-zA-Z0-9_-]+)$ ]]; then
+    printf '%s' "${BASH_REMATCH[2]}"
+  else
+    echo 'nagsly monitor add gmail: expected a Gmail thread URL (https://mail.google.com/mail/u/N/#all/THREAD_ID or #sent/THREAD_ID)' >&2
+    return 2
+  fi
+}
+
 register() {
   local query_arg="${1:-}" query list ids msg id thread_id subject to chosen url stable_id file
   command -v "$GWS" >/dev/null 2>&1 || { echo "nagsly monitor add gmail: $GWS not found" >&2; return 127; }
   command -v jq >/dev/null 2>&1 || { echo 'nagsly monitor add gmail: jq not found' >&2; return 127; }
   command -v super >/dev/null 2>&1 || { echo 'nagsly monitor add gmail: super not found' >&2; return 127; }
-  query="$(build_query "$query_arg")"
-  local params
-  params="$(printf '{"userId":"me","q":%s,"maxResults":6}' "$(json_quote "$query")")"
-  list="$(gws_call gmail users messages list --params "$params")" || {
-    echo 'nagsly monitor add gmail: search failed (check gws Gmail read-only auth)' >&2; return 1;
-  }
-  ids="$(jq -r '.messages // [] | map(.id // empty) | join(" ")' <<<"$list")"
-  [[ -n "$ids" ]] || { echo "nagsly monitor add gmail: no sent mail matches '$query'" >&2; return 1; }
-  local -a idarr; IFS=' ' read -r -a idarr <<< "$ids"; chosen="${idarr[0]}"
-  if (( ${#idarr[@]} > 1 )); then
-    local i=0 pick
-    for id in "${idarr[@]}"; do
-      msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$id\",\"format\":\"metadata\"}")"
-      i=$((i + 1))
-      subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
-      to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
-      printf '  %d. %s  (to %s)\n' "$i" "$subject" "$to"
-    done
-    printf 'Choose message 1-%d [1]: ' "${#idarr[@]}"
-    read -r pick || pick=1; pick="${pick:-1}"
-    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#idarr[@]} )); then
-      echo "nagsly monitor add gmail: invalid selection '$pick'" >&2; return 2
+  if [[ "$query_arg" == http://* || "$query_arg" == https://* ]]; then
+    thread_id="$(thread_id_from_url "$query_arg")" || return $?
+    local thread params
+    params="$(printf '{"userId":"me","id":%s,"format":"metadata"}' "$(json_quote "$thread_id")")"
+    thread="$(gws_call gmail users threads get --params "$params")" || {
+      echo 'nagsly monitor add gmail: cannot resolve Gmail thread via gws (browser-only ID or missing Gmail access); try a recipient or search query' >&2; return 1;
+    }
+    # A link to a received-only thread must not silently register as a sent
+    # reply monitor. Use the most recent SENT message for its title/recipient.
+    msg="$(jq -ec --arg id "$thread_id" 'select(.id == $id and (.messages | type == "array")) | [.messages[] | select((.labelIds // []) | index("SENT") != null)] | last | select(. != null)' <<<"$thread")" || {
+      echo 'nagsly monitor add gmail: thread has no sent message (or the URL is not an API thread ID)' >&2; return 1;
+    }
+    subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
+    to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
+    url="$query_arg"
+  else
+    query="$(build_query "$query_arg")"
+    local params
+    params="$(printf '{"userId":"me","q":%s,"maxResults":6}' "$(json_quote "$query")")"
+    list="$(gws_call gmail users messages list --params "$params")" || {
+      echo 'nagsly monitor add gmail: search failed (check gws Gmail read-only auth)' >&2; return 1;
+    }
+    ids="$(jq -r '.messages // [] | map(.id // empty) | join(" ")' <<<"$list")"
+    [[ -n "$ids" ]] || { echo "nagsly monitor add gmail: no sent mail matches '$query'" >&2; return 1; }
+    local -a idarr; IFS=' ' read -r -a idarr <<< "$ids"; chosen="${idarr[0]}"
+    if (( ${#idarr[@]} > 1 )); then
+      local i=0 pick
+      for id in "${idarr[@]}"; do
+        msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$id\",\"format\":\"metadata\"}")"
+        i=$((i + 1))
+        subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
+        to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
+        printf '  %d. %s  (to %s)\n' "$i" "$subject" "$to"
+      done
+      printf 'Choose message 1-%d [1]: ' "${#idarr[@]}"
+      read -r pick || pick=1; pick="${pick:-1}"
+      if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#idarr[@]} )); then
+        echo "nagsly monitor add gmail: invalid selection '$pick'" >&2; return 2
+      fi
+      chosen="${idarr[$((pick - 1))]}"
     fi
-    chosen="${idarr[$((pick - 1))]}"
+    thread_id="$(jq -er --arg id "$chosen" '.messages[] | select(.id == $id) | .threadId | select(type == "string" and length > 0)' <<<"$list")" || {
+      echo 'nagsly monitor add gmail: search returned no usable thread ID' >&2; return 1;
+    }
+    msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$chosen\",\"format\":\"metadata\"}")"
+    subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
+    to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
+    url="$GMAIL_WEB_BASE$thread_id"
   fi
-  thread_id="$(jq -er --arg id "$chosen" '.messages[] | select(.id == $id) | .threadId | select(type == "string" and length > 0)' <<<"$list")" || {
-    echo 'nagsly monitor add gmail: search returned no usable thread ID' >&2; return 1;
-  }
-  msg="$(gws_call gmail users messages get --params "{\"userId\":\"me\",\"id\":\"$chosen\",\"format\":\"metadata\"}")"
-  subject="$(jq -r '((.payload.headers // []) | map(select(.name=="Subject") | .value) | .[0]) // "(no subject)"' <<<"$msg")"
-  to="$(jq -r '((.payload.headers // []) | map(select(.name=="To") | .value) | .[0]) // ""' <<<"$msg")"
   stable_id="gmail-$(printf '%s' "$thread_id" | shasum -a 256 | cut -c1-12)"
-  url="$GMAIL_WEB_BASE$thread_id"
   mkdir -p "$MONITORS_D"
   file="$MONITORS_D/$stable_id.json"
   if [[ -f "$file" ]]; then
@@ -136,7 +166,15 @@ sync_monitors() {
   done
 }
 
-usage() { echo 'Usage: nagsly monitor add gmail [recipient|Gmail query]'; }
+usage() {
+  cat <<'EOF'
+Usage: nagsly monitor add gmail [recipient|Gmail query|Gmail thread URL]
+
+A URL must be a mail.google.com/mail/u/N/#all/ID, #sent/ID, or #inbox/ID
+link whose ID resolves through the Gmail API. Some Gmail browser links use
+browser-only IDs; if the URL cannot be resolved, use a recipient or query.
+EOF
+}
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in

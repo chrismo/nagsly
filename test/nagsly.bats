@@ -772,6 +772,78 @@ EOF
   [ "$(super -dynamic -f line -c 'values status' "${monitor_files[0]}")" = "replied" ]
 }
 
+@test "gmail registers a sent thread from its Gmail URL without searching" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NAGSLY_DIR/gws.args"
+if [[ "$2 $3 $4" == 'users threads get' ]]; then
+  printf '{"id":"thread-1","messages":[{"id":"msg-1","threadId":"thread-1","labelIds":["SENT"],"payload":{"headers":[{"name":"Subject","value":"Launch review"},{"name":"To","value":"team@example.com"}]}}]}\n'
+else exit 2; fi
+EOF
+  chmod +x "$pdir/gws"
+  local url='https://mail.google.com/mail/u/0/#sent/thread-1'
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail "$url"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$NAGSLY_DIR/gws.args" | tr -d ' ')" -eq 1 ]
+  grep -q '"id":"thread-1"' "$NAGSLY_DIR/gws.args"
+  local -a files=("$NAGSLY_DIR/monitors.d"/gmail-*.json)
+  [ "${#files[@]}" -eq 1 ]
+  [ "$(jq -r '.url' "${files[0]}")" = "$url" ]
+  [ "$(jq -r '.title' "${files[0]}")" = 'Launch review' ]
+  [ "$(jq -r '.to' "${files[0]}")" = 'team@example.com' ]
+}
+
+@test "gmail URL registration deduplicates the same thread found by search" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+case "$2 $3 $4" in
+  'users messages list') printf '{"messages":[{"id":"msg-1","threadId":"thread-1"}]}\n' ;;
+  'users messages get') printf '{"payload":{"headers":[{"name":"Subject","value":"Launch"}]}}\n' ;;
+  'users threads get') printf '{"id":"thread-1","messages":[{"labelIds":["SENT"],"payload":{"headers":[{"name":"Subject","value":"Launch"}]}}]}\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$pdir/gws"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail launch
+  [ "$status" -eq 0 ]
+  local -a files=("$NAGSLY_DIR/monitors.d"/gmail-*.json)
+  [ "${#files[@]}" -eq 1 ]
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail 'https://mail.google.com/mail/u/0/#all/thread-1'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already registered"* ]] || false
+  [ "${#files[@]}" -eq 1 ]
+  [ "$(jq -r '.url' "${files[0]}")" = 'https://mail.google.com/mail/u/0/#all/thread-1' ]
+}
+
+@test "gmail URL rejects non-Gmail links and threads without sent messages" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+printf 'called\n' >> "$NAGSLY_DIR/gws.args"
+printf '{"id":"thread-1","messages":[{"id":"msg-2","labelIds":["INBOX"],"payload":{"headers":[]}}]}\n'
+EOF
+  chmod +x "$pdir/gws"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail 'https://mail.google.com.evil.test/mail/u/0/#sent/thread-1'
+  [ "$status" -ne 0 ]
+  [ ! -e "$NAGSLY_DIR/gws.args" ]
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail 'https://mail.google.com/mail/u/0/#sent/thread-1'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no sent message"* ]] || false
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
+}
+
+@test "gmail URL reports unresolvable browser IDs instead of saving a dead monitor" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$pdir/gws"
+  chmod +x "$pdir/gws"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add gmail 'https://mail.google.com/mail/u/0/#all/FMfcgzGx'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cannot resolve Gmail thread"* ]] || false
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
+}
+
 @test "gmail refuses a missing thread ID without storing a monitor" {
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gws" <<'EOF'

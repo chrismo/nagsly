@@ -87,13 +87,18 @@ nagsly monitor rm <monitor-id>
 nagsly monitor add gmail sarah@example.com      # newest sent thread to this recipient
 nagsly monitor add gmail "subject:launch review" # pass through Gmail search syntax
 nagsly monitor add gmail launch                 # bare word becomes subject:launch
+nagsly monitor add gmail 'https://mail.google.com/mail/u/0/#sent/THREAD_ID' # Gmail thread link
 ```
 
 PR monitors use `gh` and classify draft/review/check/merged/closed states;
 `jq` validates the checks response before state changes are recorded.
 Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
-thread message not labelled `SENT` or `DRAFT`. Configure `sync_plugins` and
-`sync_every` to enable their regular checks (example PR/Gmail cadence: 120s).
+thread message not labelled `SENT` or `DRAFT`. Gmail thread URLs are accepted
+when the final ID resolves through the Gmail API and the thread contains sent
+mail; some browser-only Gmail IDs cannot be resolved. A URL is checked directly
+(no sent-mail search); if it fails, use a recipient or Gmail query instead.
+Configure `sync_plugins` and `sync_every` to enable regular checks (example
+PR/Gmail cadence: 120s).
 
 ## Calendar feed (gws plugin)
 
