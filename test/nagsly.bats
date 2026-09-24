@@ -41,6 +41,59 @@ build_gws() {
   [ "${#lines[@]}" -eq 5 ]
 }
 
+@test "bare nagsly shows separate event and monitor sections without running plugins" {
+  build_gws
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"build-watch-abc123","kind":"build-watch","title":"Build check","status":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/build-watch-abc123.json"
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/nagsly-monitor-build-watch" <<'EOF'
+#!/usr/bin/env bash
+printf 'RAN\n' > "$NAGSLY_DIR/plugin-ran"
+EOF
+  chmod +x "$pdir/nagsly-monitor-build-watch"
+  PATH="$pdir:$PATH" run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Events"*"Eng managers chat"*"Monitors"*"build-watch-abc123"*"Build check"* ]] || false
+  [ ! -e "$NAGSLY_DIR/plugin-ran" ]
+  [ "$(printf '%s\n' "$output" | grep -c 'Eng managers chat')" -eq 1 ]
+}
+
+@test "bare nagsly shows both empty sections without writing store directories" {
+  rmdir "$NAGSLY_DIR/events.d"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Events"*"no upcoming events"*"Monitors"*"no monitors"* ]] || false
+  [ ! -e "$NAGSLY_DIR/events.d" ]
+  [ ! -e "$NAGSLY_DIR/monitors.d" ]
+}
+
+@test "bare nagsly reports corrupt event or monitor stores instead of hiding errors" {
+  printf 'not json\n' > "$NAGSLY_DIR/events.d/bad.json"
+  run "$BIN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"error reading events"* ]] || false
+  rm "$NAGSLY_DIR/events.d/bad.json"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf 'not json\n' > "$NAGSLY_DIR/monitors.d/pr-bad.json"
+  run "$BIN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid monitor"* ]] || false
+}
+
+@test "list remains events-only and monitor list remains monitors-only" {
+  "$BIN" add 'Future event' +1h
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"pr-abc","kind":"pr","title":"PR check","status":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/pr-abc.json"
+  run "$BIN" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Future event"* ]] || false
+  [[ "$output" != *"PR check"* ]] || false
+  run "$BIN" monitor list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PR check"* ]] || false
+  [[ "$output" != *"Future event"* ]] || false
+}
+
 @test "list is epoch-sorted ascending" {
   build_gws
   run "$BIN" list
@@ -724,6 +777,73 @@ EOF
   PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr
   [ "$status" -eq 0 ]
   [ -f "$NAGSLY_DIR/monitors.d/pr-$(printf '%s' 'https://github.com/acme/app/pull/123' | shasum -a 256 | cut -c1-12).json" ]
+}
+
+@test "PR partial branch resolves one match and registers by its number" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NAGSLY_DIR/gh.args"
+case "$1 $2 $3" in
+  'pr view feature') exit 1 ;;
+  'pr list --state') printf '%s\n' '[{"number":123,"headRefName":"feature/ship-nagsly","title":"Ship","url":"https://github.com/acme/app/pull/123"},{"number":124,"headRefName":"another","title":"Other","url":"https://github.com/acme/app/pull/124"}]' ;;
+  'pr view 123') printf '%s\n' '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123"}' ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr feature
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'registered PR #123'* ]] || false
+  grep -q 'pr view 123 ' "$NAGSLY_DIR/gh.args"
+  local -a files=("$NAGSLY_DIR/monitors.d"/pr-*.json)
+  [ "${#files[@]}" -eq 1 ]
+}
+
+@test "PR partial branch lists every match and does not register ambiguously" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'pr view') exit 1 ;;
+  'pr list') printf '%s\n' '[{"number":123,"headRefName":"feature/one","title":"One","url":"https://github.com/acme/app/pull/123"},{"number":124,"headRefName":"feature/two","title":"Two","url":"https://github.com/acme/app/pull/124"}]' ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr feature
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"multiple PR branches match"*"feature/one"*"feature/two"* ]] || false
+  [[ "$output" == *'#123'*'#124'* ]] || false
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
+}
+
+@test "PR partial branch reports no match and does not register" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2" == 'pr view' ]]; then exit 1; fi
+printf '%s\n' '[{"number":123,"headRefName":"unrelated","title":"Other","url":"https://github.com/acme/app/pull/123"}]'
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr feature
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no PR branch matches 'feature'"* ]] || false
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
+}
+
+@test "PR partial branch rejects malformed or failed listings instead of claiming no match" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2" == 'pr view' ]]; then exit 1; fi
+printf '%s\n' '{"not":"an array"}'
+EOF
+  chmod +x "$pdir/gh"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr feature
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not list PR branches"* ]] || false
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
 }
 
 @test "gmail query builder scopes every search to sent mail" {

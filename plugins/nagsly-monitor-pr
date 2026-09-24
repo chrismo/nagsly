@@ -13,14 +13,43 @@ json_quote() {
 }
 field() { super -dynamic -f line -c "coalesce($2, \"\")" - <<<"$1"; }
 
+# Only branch-like refs fall back to a literal substring search. Numeric refs
+# and URLs must keep gh's exact resolution semantics, even on failure.
+partial_branch_pr_number() {
+  local ref="$1" listing matches count
+  listing="$(gh pr list --state all --limit 1000 --json number,headRefName,title,url 2>/dev/null)" || {
+    echo 'nagsly monitor add pr: could not list PR branches (check repository and gh auth)' >&2; return 1;
+  }
+  jq -e 'type == "array" and all(.[]; type == "object" and (.number | type == "number") and (.headRefName | type == "string") and (.title | type == "string") and (.url | type == "string"))' <<<"$listing" >/dev/null || {
+    echo 'nagsly monitor add pr: could not list PR branches (invalid gh response)' >&2; return 1;
+  }
+  matches="$(jq -c --arg ref "$ref" '[.[] | select(.headRefName | contains($ref))]' <<<"$listing")" || return 1
+  count="$(jq -r 'length' <<<"$matches")" || return 1
+  if (( count == 0 )); then
+    echo "nagsly monitor add pr: no PR branch matches '$ref' (searched up to 1000 PRs)" >&2; return 1
+  fi
+  if (( count > 1 )); then
+    echo "nagsly monitor add pr: multiple PR branches match '$ref'; use a PR number, URL, or full branch:" >&2
+    jq -r '.[] | "  #\(.number)  \(.headRefName)  \(.title | gsub("[\\r\\n\\t]"; " "))  \(.url)"' <<<"$matches" >&2
+    return 1
+  fi
+  jq -r '.[0].number' <<<"$matches"
+}
+
 register() {
   local ref="${1:-}"
   command -v gh >/dev/null 2>&1 || { echo 'nagsly monitor add pr: gh not found on PATH' >&2; return 127; }
-  local view number title url id file
+  local view number title url id file resolved
   if [[ -n "$ref" ]]; then
-    view="$(gh pr view "$ref" --json number,title,url,state,reviewDecision,isDraft)" || {
-      echo "nagsly monitor add pr: cannot resolve '$ref' (run this inside a GitHub repository and authenticate gh)" >&2; return 1;
-    }
+    if ! view="$(gh pr view "$ref" --json number,title,url,state,reviewDecision,isDraft 2>/dev/null)"; then
+      if [[ "$ref" =~ ^[0-9]+$ || "$ref" == *://* ]]; then
+        echo "nagsly monitor add pr: cannot resolve '$ref' (run this inside a GitHub repository and authenticate gh)" >&2; return 1
+      fi
+      resolved="$(partial_branch_pr_number "$ref")" || return 1
+      view="$(gh pr view "$resolved" --json number,title,url,state,reviewDecision,isDraft)" || {
+        echo "nagsly monitor add pr: cannot resolve matching PR #$resolved" >&2; return 1;
+      }
+    fi
   else
     view="$(gh pr view --json number,title,url,state,reviewDecision,isDraft)" || {
       echo "nagsly monitor add pr: cannot resolve current branch (run this inside a GitHub repository and authenticate gh)" >&2; return 1;
@@ -138,7 +167,7 @@ sync_monitors() {
   done
 }
 
-usage() { echo 'Usage: nagsly monitor add pr [number|URL|branch] (omit ref for current branch)'; }
+usage() { echo 'Usage: nagsly monitor add pr [number|URL|branch-or-partial] (omit ref for current branch)'; }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in

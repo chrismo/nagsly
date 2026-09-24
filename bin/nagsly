@@ -19,8 +19,9 @@
 # Activity" notification. Inline firing avoids both.
 #
 #   Subcommands (user-facing):
+#     (none)                  local overview of upcoming events and monitors
 #     add "<title>" <when>    append an event to manual.json
-#     list                    merged view of all sources, next-first
+#     list                    upcoming timed events across event sources
 #     rm <id>                 remove one event from manual.json
 #     clear [source]          wipe a source's file (default: manual)
 #     poll                    launchd entry point: fire modes due for the next meeting
@@ -367,6 +368,14 @@ day_label() {
     # Lowercased weekday abbrev ("thu") so it matches the today/tomorrow casing.
     *)           date -j -f "%Y-%m-%d" "$d" '+%a' 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "$d" ;;
   esac
+}
+
+cmd_overview() {
+  echo 'Events:'
+  cmd_list || return $?
+  echo
+  echo 'Monitors:'
+  cmd_monitor list
 }
 
 cmd_list() {
@@ -733,7 +742,6 @@ cmd_monitor() {
       "$plugin" --register "$@"
       ;;
     list)
-      mkdir -p "$MONITORS_D"
       shopt -s nullglob
       local files=("$MONITORS_D"/*.json)
       shopt -u nullglob
@@ -1036,7 +1044,8 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
 
   nagsly add "<title>" <when>   add an event (manual). <when>:
                                   HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO
-  nagsly list                   merged view of all sources, next-first
+  nagsly                        overview: upcoming events and stored monitors
+  nagsly list                   upcoming timed events across event sources, next-first
   nagsly rm <id>                remove one manual event
   nagsly clear [source]         wipe a source's file (default: manual)
   nagsly poll                   launchd entry point: fire modes due now
@@ -1070,7 +1079,8 @@ main() {
     # (it drives the fire logic without producing audio).
     build)  cmd_build "$@" ;;
     next)   cmd_poll 1 ;;
-    ""|-h|--help|help) usage ;;
+    "")     cmd_overview ;;
+    -h|--help|help) usage ;;
     *)      usage >&2; die "unknown subcommand: $cmd" ;;
   esac
 }

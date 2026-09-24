@@ -21,9 +21,10 @@ heads-down.
 - One binary, git-style subcommands.
 
 ```
+nagsly                        # local overview: upcoming events + monitors
 nagsly add "<title>" <when>   # add a manual event. <when>:
                               #   HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO
-nagsly list                   # merged view of all sources, next-first
+nagsly list                   # upcoming timed events across event sources, next-first
 nagsly rm <id>                # remove one manual event
 nagsly clear [source]         # wipe a source's file (default: manual)
 nagsly poll                   # launchd entry point: arm the next meeting
@@ -37,6 +38,11 @@ nagsly monitor add            # show installed monitor kinds and usage
 nagsly monitor list           # list pending and completed monitors
 nagsly monitor rm <id>        # remove a monitor
 ```
+
+Bare `nagsly` shows two sections: upcoming timed events (next-first) and
+stored monitors (including completed ones). It reads local JSON only; it does
+not run plugins or perform network checks. Use `nagsly list` or
+`nagsly monitor list` for the focused views; `nagsly --help` shows commands.
 
 ## How it fires
 
@@ -81,7 +87,8 @@ Core usage describes only the generic monitor command; each plugin owns its
 specific help (`nagsly monitor add <kind> --help`).
 
 ```bash
-nagsly monitor add pr 123                       # PR number or URL (no argument: current branch)
+nagsly monitor add pr 123                       # number, URL, branch, or partial branch
+nagsly monitor add pr feature                   # unique matching branch; omit ref for current branch
 nagsly monitor list
 nagsly monitor rm <monitor-id>
 nagsly monitor add gmail sarah@example.com      # newest sent thread to this recipient
@@ -90,8 +97,13 @@ nagsly monitor add gmail launch                 # bare word becomes subject:laun
 nagsly monitor add gmail 'https://mail.google.com/mail/u/0/#sent/THREAD_ID' # Gmail thread link
 ```
 
-PR monitors use `gh` and classify draft/review/check/merged/closed states;
-`jq` validates the checks response before state changes are recorded.
+PR monitors use `gh` and classify draft/review/check/merged/closed states.
+An exact PR reference is tried first; if a branch-like reference does not resolve,
+registration searches up to 1000 PR branch names (including closed PRs) for a
+literal substring. One match is registered; multiple matches are shown with
+numbers, branches, titles and URLs without registering; zero matches are
+reported. Use a number or URL when the branch search is ambiguous. `jq`
+validates the checks response before state changes are recorded.
 Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
 thread message not labelled `SENT` or `DRAFT`. Gmail thread URLs are accepted
 when the final ID resolves through the Gmail API and the thread contains sent
