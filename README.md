@@ -100,6 +100,10 @@ nagsly monitor add gmail 'https://mail.google.com/mail/u/0/#sent/THREAD_ID' # Gm
 ```
 
 PR monitors use `gh` and classify draft/review/check/merged/closed states.
+Background checks use each monitor's stored PR URL, so they work outside the
+repository where the monitor was registered. A failure on one monitor does not
+prevent the other monitors from being checked; the integration still reports
+failure for that pass.
 An exact PR reference is tried first; if a branch-like reference does not resolve,
 registration searches up to 1000 PR branch names (including closed PRs) for a
 literal substring. One match is registered; multiple matches are shown with
@@ -107,7 +111,9 @@ numbers, branches, titles and URLs without registering; zero matches are
 reported. Use a number or URL when the branch search is ambiguous. `jq`
 validates the checks response before state changes are recorded.
 Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
-thread message not labelled `SENT` or `DRAFT`. Gmail thread URLs are accepted
+thread message not labelled `SENT` or `DRAFT`. A delivered toast is committed
+even when optional sound playback fails, so audio-device problems do not cause
+repeated notifications. Gmail thread URLs are accepted
 when the final ID resolves through the Gmail API and the thread contains sent
 mail; some browser-only Gmail IDs cannot be resolved. A URL is checked directly
 (no sent-mail search); if it fails, use a recipient or Gmail query instead.

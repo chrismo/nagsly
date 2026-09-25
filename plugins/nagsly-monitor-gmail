@@ -123,10 +123,10 @@ notify_reply() {
     return 1
   fi
   if [[ -f /System/Library/Sounds/Glass.aiff ]] && command -v afplay >/dev/null 2>&1; then
-    afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 || {
-      echo 'nagsly-sync-gmail: afplay failed' >&2
-      return 1
-    }
+    # The toast is the notification; sound is best-effort. An audio-device
+    # failure must not retry an already-delivered toast on every sync tick.
+    afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 ||
+      echo 'nagsly-sync-gmail: afplay failed (reply notification delivered)' >&2
   fi
 }
 
@@ -138,7 +138,7 @@ sync_monitors() {
   local files=("$MONITORS_D"/gmail-*.json)
   shopt -u nullglob
   (( ${#files[@]} > 0 )) || return 0
-  local file monitor id thread_id title url previous status snapshot state updated who subject snippet thread_params
+  local file monitor id thread_id title url previous status snapshot state updated who subject snippet thread_params failed=0
   for file in "${files[@]}"; do
     monitor="$(<"$file")"
     id="$(field "$monitor" id)"; thread_id="$(field "$monitor" thread_id)"
@@ -147,7 +147,7 @@ sync_monitors() {
     [[ "$status" == replied ]] && continue
     thread_params="$(printf '{"userId":"me","id":%s,"format":"metadata"}' "$(json_quote "$thread_id")")"
     snapshot="$(gws_call gmail users threads get --params "$thread_params")" || {
-      echo "nagsly-sync-gmail: failed to read thread $thread_id" >&2; return 1;
+      echo "nagsly-sync-gmail: failed to read thread $thread_id" >&2; failed=1; continue;
     }
     state="$(derive_state "$snapshot")"
     if [[ "$state" == replied && "$previous" != replied ]]; then
@@ -155,7 +155,7 @@ sync_monitors() {
       subject="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="Subject") | .value) | .[0]) // ""' <<<"$snapshot")"
       snippet="$(jq -r '.messages[-1].snippet // ""' <<<"$snapshot")"
       if ! notify_reply "$title" "$url" "Reply from $who${subject:+ — $subject}${snippet:+: $snippet}"; then
-        return 1
+        failed=1; continue
       fi
       printf 'nagsly: reply received from %s — %s\n' "$who" "$url"
     fi
@@ -164,6 +164,7 @@ sync_monitors() {
     super -dynamic -f json -c "put last_state := $state_json | put status := $state_json" "$file" > "$updated"
     mv -f "$updated" "$file"
   done
+  return "$failed"
 }
 
 usage() {

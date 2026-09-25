@@ -135,27 +135,30 @@ sync_monitors() {
   local files=("$MONITORS_D"/pr-*.json)
   shopt -u nullglob
   (( ${#files[@]} > 0 )) || return 0
-  local file monitor id number title url previous view checks checks_rc state status
+  local file monitor id number title url previous view checks checks_rc state status failed=0
   for file in "${files[@]}"; do
     monitor="$(<"$file")"
     id="$(field "$monitor" id)"; number="$(field "$monitor" number)"
     [[ "$number" =~ ^[0-9]+$ ]] || { echo "nagsly-sync-pr: invalid stored PR number" >&2; return 1; }
     title="$(field "$monitor" title)"; url="$(field "$monitor" url)"
+    if [[ ! "$url" =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ || "${url##*/}" != "$number" ]]; then
+      echo "nagsly-sync-pr: invalid stored URL for PR #$number" >&2; failed=1; continue
+    fi
     previous="$(field "$monitor" last_state)"
     status="$(field "$monitor" status)"
     [[ "$status" == merged || "$status" == closed ]] && continue
-    view="$(gh pr view "$number" --json number,title,url,state,reviewDecision,isDraft 2>/dev/null)" || {
-      echo "nagsly-sync-pr: failed to read PR #$number" >&2; return 1;
+    view="$(gh pr view "$url" --json number,title,url,state,reviewDecision,isDraft 2>/dev/null)" || {
+      echo "nagsly-sync-pr: failed to read PR #$number ($url)" >&2; failed=1; continue;
     }
     checks_rc=0
-    if checks="$(gh pr checks "$number" --json bucket 2>/dev/null)"; then checks_rc=0; else checks_rc=$?; fi
+    if checks="$(gh pr checks "$url" --json bucket 2>/dev/null)"; then checks_rc=0; else checks_rc=$?; fi
     if state="$(pr_state "$view" "$checks" "$checks_rc")"; then :; else
       echo "nagsly-sync-pr: invalid checks snapshot for PR #$number (gh exit $checks_rc)" >&2
-      return 1
+      failed=1; continue
     fi
     if [[ "$state" != "$previous" ]]; then
       if ! notify_transition "$state" "PR #$number" "$url"; then
-        return 1
+        failed=1; continue
       fi
     fi
     local updated
@@ -165,6 +168,7 @@ sync_monitors() {
     mv -f "$updated" "$file"
     # Retain terminal monitors, but continue checking the remaining open PRs.
   done
+  return "$failed"
 }
 
 usage() { echo 'Usage: nagsly monitor add pr [number|URL|branch-or-partial] (omit ref for current branch)'; }

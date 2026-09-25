@@ -1097,6 +1097,75 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "PR sync uses each stored URL outside a git repository and checks later monitors after a failure" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NAGSLY_DIR/gh.args"
+case "$1 $2 $3" in
+  'pr view https://github.com/acme/app/pull/1') exit 1 ;;
+  'pr view https://github.com/acme/other/pull/2') printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n' ;;
+  'pr checks https://github.com/acme/other/pull/2') printf '[]\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$pdir/gh"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"pr-first","kind":"pr","number":"1","title":"First","url":"https://github.com/acme/app/pull/1","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/pr-first.json"
+  printf '{"id":"pr-second","kind":"pr","number":"2","title":"Second","url":"https://github.com/acme/other/pull/2","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/pr-second.json"
+  printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  grep -q 'pr view https://github.com/acme/other/pull/2' "$NAGSLY_DIR/gh.args"
+  grep -q 'pr checks https://github.com/acme/other/pull/2' "$NAGSLY_DIR/gh.args"
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/pr-first.json")" = waiting ]
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/pr-second.json")" = approved ]
+}
+
+@test "Gmail sync checks later threads after one thread read fails" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'"id":"thread-1"'*) exit 1 ;;
+  *'"id":"thread-2"'*) printf '{"messages":[{"labelIds":["INBOX"],"payload":{"headers":[{"name":"From","value":"someone@example.com"}]}}]}\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$pdir/gws"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"gmail-first","kind":"gmail","thread_id":"thread-1","title":"First","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-first.json"
+  printf '{"id":"gmail-second","kind":"gmail","thread_id":"thread-2","title":"Second","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-second.json"
+  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-first.json")" = waiting ]
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-second.json")" = replied ]
+}
+
+@test "Gmail reply commits when optional afplay fails" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+printf '{"messages":[{"labelIds":["INBOX"],"snippet":"Yes","payload":{"headers":[{"name":"From","value":"someone@example.com"}]}}]}\n'
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  cat > "$pdir/afplay" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$pdir/gws" "$pdir/alerter" "$pdir/afplay"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
+  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
+  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = replied ]
+}
+
 @test "PR sync detects a merge, notifies once, and retains completed monitor" {
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
