@@ -673,7 +673,10 @@ do_fire() {
       bash -c '
         deadline=$(( $(date +%s) + $2 ))
         while (( $(date +%s) < deadline )); do
-          afplay "$1"
+          if ! afplay "$1"; then
+            echo "nagsly alarm: afplay failed; stopping sound loop" >&2
+            break
+          fi
           for (( i = 0; i < $3; i++ )); do
             (( $(date +%s) < deadline )) || break
             sleep 1

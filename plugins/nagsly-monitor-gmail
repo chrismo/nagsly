@@ -125,7 +125,7 @@ notify_reply() {
   if [[ -f /System/Library/Sounds/Glass.aiff ]] && command -v afplay >/dev/null 2>&1; then
     # The toast is the notification; sound is best-effort. An audio-device
     # failure must not retry an already-delivered toast on every sync tick.
-    afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 ||
+    afplay /System/Library/Sounds/Glass.aiff >/dev/null ||
       echo 'nagsly-sync-gmail: afplay failed (reply notification delivered)' >&2
   fi
 }
@@ -138,19 +138,35 @@ sync_monitors() {
   local files=("$MONITORS_D"/gmail-*.json)
   shopt -u nullglob
   (( ${#files[@]} > 0 )) || return 0
-  local file monitor id thread_id title url previous status snapshot state updated who subject snippet thread_params failed=0
+  local file monitor id thread_id title url previous snapshot state updated who subject snippet thread_params failed=0 last_id current_id sent_since_last notify_needed state_json message_json
   for file in "${files[@]}"; do
     monitor="$(<"$file")"
     id="$(field "$monitor" id)"; thread_id="$(field "$monitor" thread_id)"
     title="$(field "$monitor" title)"; url="$(field "$monitor" url)"
-    previous="$(field "$monitor" last_state)"; status="$(field "$monitor" status)"
-    [[ "$status" == replied ]] && continue
+    previous="$(field "$monitor" last_state)"
+    last_id="$(field "$monitor" last_message_id)"
     thread_params="$(printf '{"userId":"me","id":%s,"format":"metadata"}' "$(json_quote "$thread_id")")"
     snapshot="$(gws_call gmail users threads get --params "$thread_params")" || {
       echo "nagsly-sync-gmail: failed to read thread $thread_id" >&2; failed=1; continue;
     }
     state="$(derive_state "$snapshot")"
-    if [[ "$state" == replied && "$previous" != replied ]]; then
+    current_id="$(jq -r '.messages[-1].id // ""' <<<"$snapshot")" || { failed=1; continue; }
+    notify_needed=0
+    if [[ "$state" == replied ]]; then
+      if [[ "$previous" != replied ]]; then
+        notify_needed=1
+      elif [[ -n "$last_id" && -n "$current_id" && "$last_id" != "$current_id" ]]; then
+        # A complete send/reply cycle may happen between ticks. Only alert
+        # again if we can see a new SENT message after the last observed one.
+        sent_since_last="$(jq -r --arg id "$last_id" '
+          (.messages | map(.id) | index($id)) as $pos
+          | if $pos == null then false
+            else any(.messages[($pos + 1):][]; (.labelIds // []) | index("SENT") != null)
+            end' <<<"$snapshot")" || { failed=1; continue; }
+        [[ "$sent_since_last" != true ]] || notify_needed=1
+      fi
+    fi
+    if (( notify_needed )); then
       who="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="From") | .value) | .[0]) // "someone"' <<<"$snapshot")"
       subject="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="Subject") | .value) | .[0]) // ""' <<<"$snapshot")"
       snippet="$(jq -r '.messages[-1].snippet // ""' <<<"$snapshot")"
@@ -160,8 +176,9 @@ sync_monitors() {
       printf 'nagsly: reply received from %s — %s\n' "$who" "$url"
     fi
     updated="$MONITORS_D/.$(basename "$file").tmp.$$"
-    local state_json; state_json="$(json_quote "$state")"
-    super -dynamic -f json -c "put last_state := $state_json | put status := $state_json" "$file" > "$updated"
+    state_json="$(json_quote "$state")"
+    message_json="$(json_quote "$current_id")"
+    super -dynamic -f json -c "put last_state := $state_json | put status := $state_json | put last_message_id := $message_json" "$file" > "$updated"
     mv -f "$updated" "$file"
   done
   return "$failed"

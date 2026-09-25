@@ -64,7 +64,9 @@ meeting minute rather than landing on it. Run toast-only first
 (`alarm_enabled: 0`) to build trust, then flip the loud alarm on.
 
 Silence a firing alarm with `nagsly stop` (bind it to a hotkey for one-touch
-dismissal), the alerter's Stop action, or just wait out the auto-timeout.
+dismissal), the alerter's Stop action, or just wait out the auto-timeout. If
+`afplay` fails, its diagnostic reaches the launchd stderr log and the sound
+loop stops rather than retrying rapidly; the visual notification remains.
 
 ## Install
 
@@ -111,9 +113,12 @@ numbers, branches, titles and URLs without registering; zero matches are
 reported. Use a number or URL when the branch search is ambiguous. `jq`
 validates the checks response before state changes are recorded.
 Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
-thread message not labelled `SENT` or `DRAFT`. A delivered toast is committed
-even when optional sound playback fails, so audio-device problems do not cause
-repeated notifications. Gmail thread URLs are accepted
+thread message not labelled `SENT` or `DRAFT`. The monitor stays attached to
+the thread: after you send another message it returns to `waiting`, and a
+subsequent reply notifies again. It also detects a complete send/reply cycle
+between sync ticks by tracking the latest observed message ID. A delivered
+toast is committed even when optional sound playback fails; `afplay` stderr is
+logged for diagnosis without repeating the toast. Gmail thread URLs are accepted
 when the final ID resolves through the Gmail API and the thread contains sent
 mail; some browser-only Gmail IDs cannot be resolved. A URL is checked directly
 (no sent-mail search); if it fails, use a recipient or Gmail query instead.

@@ -457,6 +457,27 @@ EOF
   # would match unrelated audio the developer may be playing.)
 }
 
+@test "alarm stops failed afplay rather than busy-looping and reports the error" {
+  local stub="$TEST_DIR/stub"; mkdir -p "$stub"
+  cat > "$stub/afplay" <<'EOF'
+#!/usr/bin/env bash
+printf 'play\n' >> "$NAGSLY_DIR/afplay.calls"
+echo 'AudioQueueStart failed (-66681)' >&2
+exit 1
+EOF
+  cat > "$stub/alerter" <<'EOF'
+#!/usr/bin/env bash
+sleep 1
+EOF
+  chmod +x "$stub/afplay" "$stub/alerter"
+  seed_meeting 30
+  run env -u NAGSLY_DRY_FIRE PATH="$stub:$PATH" ALERTER=alerter ALARM_TIMEOUT=2 \
+    ALARM_GAP=0 TOAST_ENABLED=0 "$BIN" poll
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$NAGSLY_DIR/afplay.calls" | tr -d ' ')" -eq 1 ]
+  [[ "$output" == *"AudioQueueStart failed (-66681)"* ]] || false
+}
+
 @test "alarm_gap spaces out the loop's repeats" {
   # Exercise the loop body directly rather than through `poll`: in `poll` the
   # stub alerter returns instantly, so do_fire kills the loop after one play and
@@ -473,7 +494,10 @@ EOF
   PATH="$stub:$PATH" bash -c '
     deadline=$(( $(date +%s) + $2 ))
     while (( $(date +%s) < deadline )); do
-      afplay "$1"
+      if ! afplay "$1"; then
+        echo "nagsly alarm: afplay failed; stopping sound loop" >&2
+        break
+      fi
       for (( i = 0; i < $3; i++ )); do
         (( $(date +%s) < deadline )) || break
         sleep 1
@@ -1120,6 +1144,79 @@ EOF
   grep -q 'pr checks https://github.com/acme/other/pull/2' "$NAGSLY_DIR/gh.args"
   [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/pr-first.json")" = waiting ]
   [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/pr-second.json")" = approved ]
+}
+
+@test "Gmail monitor re-arms after another sent message and notifies on the next reply" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+case "$(<"$NAGSLY_DIR/phase")" in
+  sent) printf '{"messages":[{"id":"sent-2","labelIds":["SENT"]}]}\n' ;;
+  reply) printf '{"messages":[{"id":"sent-2","labelIds":["SENT"]},{"id":"reply-2","labelIds":["INBOX"],"payload":{"headers":[{"name":"From","value":"reply@example.com"}]}}]}\n' ;;
+esac
+EOF
+  chmod +x "$pdir/gws"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"replied","last_state":"replied"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
+  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifies"
+  printf sent > "$NAGSLY_DIR/phase"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = waiting ]
+  [ ! -e "$TEST_DIR/notifies" ]
+  printf reply > "$NAGSLY_DIR/phase"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = replied ]
+  [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
+}
+
+@test "Gmail detects a new reply even if a sent message and reply arrive between checks" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+case "$(<"$NAGSLY_DIR/phase")" in
+  first) printf '{"messages":[{"id":"sent-1","labelIds":["SENT"]},{"id":"reply-1","labelIds":["INBOX"]}]}\n' ;;
+  second) printf '{"messages":[{"id":"sent-1","labelIds":["SENT"]},{"id":"reply-1","labelIds":["INBOX"]},{"id":"sent-2","labelIds":["SENT"]},{"id":"reply-2","labelIds":["INBOX"]}]}\n' ;;
+esac
+EOF
+  chmod +x "$pdir/gws"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"replied","last_state":"replied"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
+  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifies"
+  printf first > "$NAGSLY_DIR/phase"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_DIR/notifies" ]
+  [ "$(jq -r '.last_message_id' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = reply-1 ]
+  printf second > "$NAGSLY_DIR/phase"
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
+  [ "$(jq -r '.last_message_id' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = reply-2 ]
+  GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
+}
+
+@test "Gmail sound failure logs afplay stderr but commits the reply" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  printf '#!/usr/bin/env bash\nprintf "{\\"messages\\":[{\\"labelIds\\":[\\"INBOX\\"]}]}\\n"\n' > "$pdir/gws"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$pdir/alerter"
+  printf '#!/usr/bin/env bash\necho "AudioQueueStart failed (-66681)" >&2\nexit 1\n' > "$pdir/afplay"
+  chmod +x "$pdir/gws" "$pdir/alerter" "$pdir/afplay"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
+  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
+  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"AudioQueueStart failed (-66681)"* ]] || false
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = replied ]
 }
 
 @test "Gmail sync checks later threads after one thread read fails" {
