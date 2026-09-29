@@ -97,34 +97,55 @@ pr_state() {
   esac
 }
 
-notify_transition() {
-  local state="$1" title="$2" url="$3" body sound
-  if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "$state" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
-  [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
-  case "$state" in
-    approved) body='PR approved — merge it'; sound=Glass ;;
-    approved_ci_pending) body='PR approved (CI still running)'; sound=Glass ;;
-    checks_red) body='PR checks went red'; sound=Basso ;;
-    changes_requested) body='Changes requested on the PR'; sound=Basso ;;
-    merged) body='PR merged 🎉'; sound=Glass ;;
-    closed) body='PR closed without merging'; sound=Basso ;;
-    *) return 0 ;;
+pr_notification_body() {
+  case "$1" in
+    approved) printf 'PR approved — merge it' ;;
+    approved_ci_pending) printf 'PR approved (CI still running)' ;;
+    checks_red) printf 'PR checks went red' ;;
+    changes_requested) printf 'Changes requested on the PR' ;;
+    merged) printf 'PR merged 🎉' ;;
+    closed) printf 'PR closed without merging' ;;
+    *) return 1 ;;
   esac
-  if ! command -v alerter >/dev/null 2>&1; then
-    echo 'nagsly-sync-pr: alerter not found; cannot notify state transition' >&2
-    return 1
-  fi
-  local clicked
-  if clicked="$(alerter --title "$title" --message "$body" --actions 'Open PR' --timeout 30 2>&1)"; then
-    if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]] && command -v open >/dev/null 2>&1; then
-      open "$url" >/dev/null 2>&1 || true
+}
+
+notify_worker() {
+  local state="$1" title="$2" url="$3" group="$4" alerter_bin="$5" body clicked
+  body="$(pr_notification_body "$state")" || return 1
+  if clicked="$("$alerter_bin" --title "$title" --message "$body" --actions 'Open PR' --group "$group" 2>&1)"; then
+    if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]]; then
+      /usr/bin/open "$url" >/dev/null 2>&1 || true
     fi
   else
     echo "nagsly-sync-pr: alerter failed: $clicked" >&2
     return 1
   fi
-  local snd="/System/Library/Sounds/$sound.aiff"
-  [[ -f "$snd" ]] && command -v afplay >/dev/null 2>&1 && afplay "$snd" >/dev/null 2>&1 || true
+}
+
+notify_transition() {
+  local state="$1" previous="$2" title="$3" url="$4" group="$5"
+  if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "$state" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
+  [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
+  if pr_notification_body "$state" >/dev/null; then
+    if ! command -v alerter >/dev/null 2>&1; then
+      echo 'nagsly-sync-pr: alerter not found; cannot notify state transition' >&2
+      return 1
+    fi
+    if ! launchctl submit -l "com.chrismo.nagsly.pr.$$.${RANDOM}" -e "$CONFIG_DIR/notification.err.log" -- "$(command -v nagsly-monitor-pr)" --notify "$state" "$title" "$url" "$group" "$(command -v alerter)"; then
+      echo 'nagsly-sync-pr: notification submission failed' >&2
+      return 1
+    fi
+    echo "nagsly-sync-pr: $title: $previous -> $state (notification submitted)"
+  else
+    if ! command -v alerter >/dev/null 2>&1; then
+      echo 'nagsly-sync-pr: alerter not found; cannot clear state transition' >&2
+      return 1
+    fi
+    if ! alerter --remove "$group"; then
+      echo "nagsly-sync-pr: could not clear notification for $title" >&2
+      return 1
+    fi
+  fi
 }
 
 sync_monitors() {
@@ -157,7 +178,7 @@ sync_monitors() {
       failed=1; continue
     fi
     if [[ "$state" != "$previous" ]]; then
-      if ! notify_transition "$state" "PR #$number" "$url"; then
+      if ! notify_transition "$state" "$previous" "PR #$number" "$url" "nagsly-pr-$id"; then
         failed=1; continue
       fi
     fi
@@ -183,6 +204,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       esac
       ;;
     --sync) sync_monitors ;;
+    --notify) shift; notify_worker "$@" ;;
     -h|--help|help) usage ;;
     *) register "${1:-}" ;;
   esac

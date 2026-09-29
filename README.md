@@ -111,7 +111,11 @@ registration searches up to 1000 PR branch names (including closed PRs) for a
 literal substring. One match is registered; multiple matches are shown with
 numbers, branches, titles and URLs without registering; zero matches are
 reported. Use a number or URL when the branch search is ambiguous. `jq`
-validates the checks response before state changes are recorded.
+validates the checks response before state changes are recorded. PR state
+notifications are sticky, visual-only, and grouped by monitor: a later state
+replaces that PR's notification without affecting other PRs. Returning to
+`waiting` or `draft` clears the previous notification. Delivery runs separately
+from the sync check so an undismissed notification cannot block future checks.
 Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
 thread message not labelled `SENT` or `DRAFT`. The monitor stays attached to
 the thread: after you send another message it returns to `waiting`, and a

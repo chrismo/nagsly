@@ -1327,6 +1327,121 @@ EOF
   [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "waiting" ]
 }
 
+@test "PR approval submits a sticky grouped visual notification without sound" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n'
+else printf '[]\n'; fi
+EOF
+  cat > "$pdir/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf 'alerter %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  cat > "$pdir/afplay" <<'EOF'
+#!/usr/bin/env bash
+printf 'sound\n' >> "$NOTIFY_ORDER_LOG"
+EOF
+  chmod +x "$pdir/gh" "$pdir/launchctl" "$pdir/alerter" "$pdir/afplay" "$pdir/nagsly-monitor-pr"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--notify approved PR #123 https://github.com/acme/app/pull/123 nagsly-pr-"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" != *sound* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" != *"alerter --title"* ]] || false
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = approved ]
+  [[ "$output" == *"PR #123: waiting -> approved (notification submitted)"* ]] || false
+}
+
+@test "PR notify worker keeps the Open PR action and uses a sticky group" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+printf 'Open PR\n'
+EOF
+  cat > "$pdir/afplay" <<'EOF'
+#!/usr/bin/env bash
+  printf 'sound\n' >> "$NOTIFY_ORDER_LOG"
+EOF
+  chmod +x "$pdir/alerter" "$pdir/afplay"
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --notify approved 'PR #123' https://github.com/acme/app/pull/123 nagsly-pr-abc "$pdir/alerter"
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--group nagsly-pr-abc"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" != *"--timeout"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--actions Open PR"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" != *sound* ]] || false
+}
+
+@test "PR groups are per monitor and silent states clear the prior notification" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2" == view ]]; then
+  printf '{"state":"OPEN","reviewDecision":"%s","isDraft":%s}\n' "$REVIEW_DECISION" "$IS_DRAFT"
+else printf '[]\n'; fi
+EOF
+  cat > "$pdir/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'submit %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf 'remove %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  chmod +x "$pdir/gh" "$pdir/launchctl" "$pdir/alerter"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  for num in 123 456; do
+    printf '{"id":"pr-%s","kind":"pr","number":"%s","title":"Ship","url":"https://github.com/acme/app/pull/%s","status":"waiting","last_state":"waiting"}\n' "$num" "$num" "$num" > "$NAGSLY_DIR/monitors.d/pr-$num.json"
+  done
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  REVIEW_DECISION=APPROVED IS_DRAFT=false NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --sync
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"nagsly-pr-pr-123"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"nagsly-pr-pr-456"* ]] || false
+  REVIEW_DECISION=APPROVED IS_DRAFT=true NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --sync
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"remove --remove nagsly-pr-pr-123"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"remove --remove nagsly-pr-pr-456"* ]] || false
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/pr-123.json")" = draft ]
+  REVIEW_DECISION=APPROVED IS_DRAFT=false NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --sync
+  [ "$status" -eq 0 ]
+  REVIEW_DECISION=REVIEW_REQUIRED IS_DRAFT=false NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/pr-123.json")" = waiting ]
+  [ "$(grep -c 'remove --remove nagsly-pr-pr-123' "$NOTIFY_ORDER_LOG")" -eq 2 ]
+}
+
+@test "PR sync retries clearing a stale notification when removal fails" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}\n'
+else printf '[]\n'; fi
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == --remove ]] || exit 2
+exit 1
+EOF
+  chmod +x "$pdir/gh" "$pdir/alerter"
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"approved","last_state":"approved"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not clear notification"* ]] || false
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = approved ]
+}
+
 @test "PR sync reports notification failure and leaves transition retryable" {
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
@@ -1335,19 +1450,17 @@ EOF
 if [[ "$2" == view ]]; then printf '{"state":"MERGED","reviewDecision":"APPROVED","isDraft":false}\n'
 else printf '[]\n'; fi
 EOF
-  cat > "$pdir/alerter" <<'EOF'
+  cat > "$pdir/launchctl" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-  # Override dry-fire only with stubbed notification/audio executables.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$pdir/afplay"
-  chmod +x "$pdir/gh" "$pdir/alerter" "$pdir/afplay" "$pdir/nagsly-monitor-pr"
+  chmod +x "$pdir/gh" "$pdir/launchctl" "$pdir/nagsly-monitor-pr"
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
   printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
   NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
   [ "$status" -ne 0 ]
-  [[ "$output" == *"alerter failed"* ]] || false
+  [[ "$output" == *"notification submission failed"* ]] || false
   [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "waiting" ]
 }
 
