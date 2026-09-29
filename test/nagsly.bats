@@ -1355,6 +1355,7 @@ EOF
   NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
   [ "$status" -eq 0 ]
   [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--notify approved PR #123 https://github.com/acme/app/pull/123 nagsly-pr-"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"com.chrismo.nagsly.pr."* ]] || false
   [[ "$(<"$NOTIFY_ORDER_LOG")" != *sound* ]] || false
   [[ "$(<"$NOTIFY_ORDER_LOG")" != *"alerter --title"* ]] || false
   [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = approved ]
@@ -1370,16 +1371,21 @@ printf 'Open PR\n'
 EOF
   cat > "$pdir/afplay" <<'EOF'
 #!/usr/bin/env bash
-  printf 'sound\n' >> "$NOTIFY_ORDER_LOG"
+printf 'sound\n' >> "$NOTIFY_ORDER_LOG"
 EOF
-  chmod +x "$pdir/alerter" "$pdir/afplay"
+  cat > "$pdir/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'launchctl %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  chmod +x "$pdir/alerter" "$pdir/afplay" "$pdir/launchctl"
   export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
-  NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --notify approved 'PR #123' https://github.com/acme/app/pull/123 nagsly-pr-abc "$pdir/alerter"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-pr" --notify approved 'PR #123' https://github.com/acme/app/pull/123 nagsly-pr-abc "$pdir/alerter" com.chrismo.nagsly.pr.test
   [ "$status" -eq 0 ]
   [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--group nagsly-pr-abc"* ]] || false
   [[ "$(<"$NOTIFY_ORDER_LOG")" != *"--timeout"* ]] || false
   [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--actions Open PR"* ]] || false
   [[ "$(<"$NOTIFY_ORDER_LOG")" != *sound* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"launchctl remove com.chrismo.nagsly.pr.test"* ]] || false
 }
 
 @test "PR groups are per monitor and silent states clear the prior notification" {

@@ -110,7 +110,7 @@ pr_notification_body() {
 }
 
 notify_worker() {
-  local state="$1" title="$2" url="$3" group="$4" alerter_bin="$5" body clicked
+  local state="$1" title="$2" url="$3" group="$4" alerter_bin="$5" label="$6" body clicked rc=0
   body="$(pr_notification_body "$state")" || return 1
   if clicked="$("$alerter_bin" --title "$title" --message "$body" --actions 'Open PR' --group "$group" 2>&1)"; then
     if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]]; then
@@ -118,12 +118,14 @@ notify_worker() {
     fi
   else
     echo "nagsly-sync-pr: alerter failed: $clicked" >&2
-    return 1
+    rc=1
   fi
+  launchctl remove "$label" || { echo "nagsly-sync-pr: could not remove notification job $label" >&2; return 1; }
+  return "$rc"
 }
 
 notify_transition() {
-  local state="$1" previous="$2" title="$3" url="$4" group="$5"
+  local state="$1" previous="$2" title="$3" url="$4" group="$5" label
   if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "$state" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
   [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
   if pr_notification_body "$state" >/dev/null; then
@@ -131,7 +133,8 @@ notify_transition() {
       echo 'nagsly-sync-pr: alerter not found; cannot notify state transition' >&2
       return 1
     fi
-    if ! launchctl submit -l "com.chrismo.nagsly.pr.$$.${RANDOM}" -e "$CONFIG_DIR/notification.err.log" -- "$(command -v nagsly-monitor-pr)" --notify "$state" "$title" "$url" "$group" "$(command -v alerter)"; then
+    label="com.chrismo.nagsly.pr.$$.${RANDOM}"
+    if ! launchctl submit -l "$label" -e "$CONFIG_DIR/notification.err.log" -- "$(command -v nagsly-monitor-pr)" --notify "$state" "$title" "$url" "$group" "$(command -v alerter)" "$label"; then
       echo 'nagsly-sync-pr: notification submission failed' >&2
       return 1
     fi
