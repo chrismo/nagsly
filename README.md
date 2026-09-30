@@ -117,13 +117,14 @@ replaces that PR's notification without affecting other PRs. Returning to
 `waiting` or `draft` clears the previous notification. Delivery runs separately
 from the sync check so an undismissed notification cannot block future checks.
 Gmail monitors use `gws` with Gmail read-only access; a reply is the newest
-thread message not labelled `SENT` or `DRAFT`. The monitor stays attached to
-the thread: after you send another message it returns to `waiting`, and a
+thread message not labelled `SENT` or `DRAFT`. Reply notifications are sticky,
+visual-only, and grouped per thread; closing one does not notify again for the
+same reply. Delivery runs separately from sync so an undismissed toast cannot
+block further checks. The monitor stays attached to the thread: after you send
+another message it returns to `waiting` and clears the old notification; a
 subsequent reply notifies again. It also detects a complete send/reply cycle
-between sync ticks by tracking the latest observed message ID. A delivered
-toast is committed even when optional sound playback fails; `afplay` stderr is
-logged for diagnosis without repeating the toast. Gmail thread URLs are accepted
-when the final ID resolves through the Gmail API and the thread contains sent
+between sync ticks by tracking the latest observed message ID. Gmail thread URLs
+are accepted when the final ID resolves through the Gmail API and the thread contains sent
 mail; some browser-only Gmail IDs cannot be resolved. A URL is checked directly
 (no sent-mail search); if it fails, use a recipient or Gmail query instead.
 Configure `sync_plugins` and `sync_every` to enable regular checks (example

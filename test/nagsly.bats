@@ -1204,19 +1204,90 @@ EOF
   [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
 }
 
-@test "Gmail sound failure logs afplay stderr but commits the reply" {
+@test "Gmail reply submits one visual notification per thread without blocking sync" {
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
-  printf '#!/usr/bin/env bash\nprintf "{\\"messages\\":[{\\"labelIds\\":[\\"INBOX\\"]}]}\\n"\n' > "$pdir/gws"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$pdir/alerter"
-  printf '#!/usr/bin/env bash\necho "AudioQueueStart failed (-66681)" >&2\nexit 1\n' > "$pdir/afplay"
-  chmod +x "$pdir/gws" "$pdir/alerter" "$pdir/afplay"
+  cp "$PWD/plugins/nagsly-monitor-gmail" "$pdir/nagsly-monitor-gmail"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+printf '{"messages":[{"id":"reply-1","labelIds":["INBOX"],"payload":{"headers":[{"name":"From","value":"friend@example.com"}]}}]}\n'
+EOF
+  cat > "$pdir/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'launchctl %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf 'alerter %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  cat > "$pdir/afplay" <<'EOF'
+#!/usr/bin/env bash
+printf 'sound\n' >> "$NOTIFY_ORDER_LOG"
+EOF
+  chmod +x "$pdir"/*
   mkdir -p "$NAGSLY_DIR/monitors.d"
-  printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
-  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
-  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
+  for id in one two; do
+    printf '{"id":"gmail-%s","kind":"gmail","thread_id":"thread-%s","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-%s","status":"waiting","last_state":"waiting"}\n' "$id" "$id" "$id" > "$NAGSLY_DIR/monitors.d/gmail-$id.json"
+  done
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --sync
   [ "$status" -eq 0 ]
-  [[ "$output" == *"AudioQueueStart failed (-66681)"* ]] || false
-  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = replied ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--notify Mail https://mail.google.com/mail/u/0/#all/thread-one nagsly-gmail-gmail-one"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--notify Mail https://mail.google.com/mail/u/0/#all/thread-two nagsly-gmail-gmail-two"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" != *"alerter --title"* && "$(<"$NOTIFY_ORDER_LOG")" != *sound* ]] || false
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/gmail-one.json")" = replied ]
+  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --sync
+  [ "$(wc -l < "$NOTIFY_ORDER_LOG" | tr -d ' ')" -eq 2 ]
+}
+
+@test "Gmail notify worker is sticky, opens only on click, and removes its job" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf 'alerter %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+printf '%s\n' "$ALERTER_RESPONSE"
+EOF
+  cat > "$pdir/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'launchctl %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  cat > "$pdir/open" <<'EOF'
+#!/usr/bin/env bash
+printf 'open %s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+EOF
+  chmod +x "$pdir"/*
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  NAGSLY_DRY_FIRE= ALERTER_RESPONSE=@CLOSED PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --notify Mail 'https://mail.google.com/mail/u/0/#all/thread-1' nagsly-gmail-test 'Reply from friend' "$pdir/alerter" com.chrismo.nagsly.gmail.test
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--actions Open Thread --group nagsly-gmail-test"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" != *"--timeout"* && "$(<"$NOTIFY_ORDER_LOG")" != *sound* && "$(<"$NOTIFY_ORDER_LOG")" != *"open https:"* ]] || false
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"launchctl remove com.chrismo.nagsly.gmail.test"* ]] || false
+  ALERTER_RESPONSE='Open Thread' NAGSLY_DRY_FIRE= PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --notify Mail 'https://mail.google.com/mail/u/0/#all/thread-1' nagsly-gmail-test 'Reply from friend' "$pdir/alerter" com.chrismo.nagsly.gmail.test
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"open https://mail.google.com/mail/u/0/#all/thread-1"* ]] || false
+}
+
+@test "Gmail re-arm clears its toast and retries removal failures" {
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  cat > "$pdir/gws" <<'EOF'
+#!/usr/bin/env bash
+printf '{"messages":[{"id":"sent-2","labelIds":["SENT"]}]}\n'
+EOF
+  cat > "$pdir/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NOTIFY_ORDER_LOG"
+[[ -z "${REMOVE_FAIL:-}" ]]
+EOF
+  chmod +x "$pdir"/*
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"replied","last_state":"replied"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  NAGSLY_DRY_FIRE= REMOVE_FAIL=1 GWS=gws PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/gmail-test.json")" = replied ]
+  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/gmail-test.json")" = waiting ]
+  [ "$(grep -c -- '--remove nagsly-gmail-gmail-test' "$NOTIFY_ORDER_LOG")" -eq 2 ]
 }
 
 @test "Gmail sync checks later threads after one thread read fails" {
@@ -1240,27 +1311,23 @@ EOF
   [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-second.json")" = replied ]
 }
 
-@test "Gmail reply commits when optional afplay fails" {
+@test "Gmail reply remains retryable if notification submission fails" {
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gws" <<'EOF'
 #!/usr/bin/env bash
 printf '{"messages":[{"labelIds":["INBOX"],"snippet":"Yes","payload":{"headers":[{"name":"From","value":"someone@example.com"}]}}]}\n'
 EOF
-  cat > "$pdir/alerter" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-  cat > "$pdir/afplay" <<'EOF'
+  cat > "$pdir/launchctl" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-  chmod +x "$pdir/gws" "$pdir/alerter" "$pdir/afplay"
+  chmod +x "$pdir/gws" "$pdir/launchctl"
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
-  printf '{"sync_plugins":["gmail"]}' > "$NAGSLY_DIR/config.json"
-  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync
-  [ "$status" -eq 0 ]
-  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = replied ]
+  NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"notification submission failed"* ]] || false
+  [ "$(jq -r '.status' "$NAGSLY_DIR/monitors.d/gmail-test.json")" = waiting ]
 }
 
 @test "PR sync detects a merge, notifies once, and retains completed monitor" {

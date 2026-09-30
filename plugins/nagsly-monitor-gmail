@@ -105,28 +105,41 @@ register() {
 derive_state() {
   jq -r 'if (.messages | length)==0 then "waiting" else (.messages[-1].labelIds // [] | if index("SENT")!=null or index("DRAFT")!=null then "waiting" else "replied" end) end' <<<"$1"
 }
+notify_worker() {
+  local title="$1" url="$2" group="$3" body="$4" alerter_bin="$5" label="$6" clicked rc=0
+  if clicked="$("$alerter_bin" --title "$title" --message "$body" --actions 'Open Thread' --group "$group" 2>&1)"; then
+    if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]] && command -v open >/dev/null 2>&1; then
+      open "$url" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "nagsly-sync-gmail: alerter failed: $clicked" >&2
+    rc=1
+  fi
+  launchctl remove "$label" || { echo "nagsly-sync-gmail: could not remove notification job $label" >&2; return 1; }
+  return "$rc"
+}
+
 notify_reply() {
-  local title="$1" url="$2" body="$3"
+  local title="$1" url="$2" body="$3" group="$4" label
   if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "reply" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
   [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
   if ! command -v alerter >/dev/null 2>&1; then
     echo 'nagsly-sync-gmail: alerter not found; cannot notify reply' >&2
     return 1
   fi
-  local clicked
-  if clicked="$(alerter --title "$title" --message "$body" --actions 'Open Thread' --timeout 30 2>&1)"; then
-    if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]] && command -v open >/dev/null 2>&1; then
-      open "$url" >/dev/null 2>&1 || true
-    fi
-  else
-    echo "nagsly-sync-gmail: alerter failed: $clicked" >&2
+  label="com.chrismo.nagsly.gmail.$$.${RANDOM}"
+  if ! launchctl submit -l "$label" -e "$CONFIG_DIR/notification.err.log" -- "$(command -v nagsly-monitor-gmail)" --notify "$title" "$url" "$group" "$body" "$(command -v alerter)" "$label"; then
+    echo 'nagsly-sync-gmail: notification submission failed' >&2
     return 1
   fi
-  if [[ -f /System/Library/Sounds/Glass.aiff ]] && command -v afplay >/dev/null 2>&1; then
-    # The toast is the notification; sound is best-effort. An audio-device
-    # failure must not retry an already-delivered toast on every sync tick.
-    afplay /System/Library/Sounds/Glass.aiff >/dev/null ||
-      echo 'nagsly-sync-gmail: afplay failed (reply notification delivered)' >&2
+}
+
+clear_reply() {
+  local group="$1"
+  [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" || -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
+  if ! command -v alerter >/dev/null 2>&1 || ! alerter --remove "$group"; then
+    echo "nagsly-sync-gmail: could not clear notification $group" >&2
+    return 1
   fi
 }
 
@@ -170,10 +183,14 @@ sync_monitors() {
       who="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="From") | .value) | .[0]) // "someone"' <<<"$snapshot")"
       subject="$(jq -r '(.messages[-1].payload.headers // [] | map(select(.name=="Subject") | .value) | .[0]) // ""' <<<"$snapshot")"
       snippet="$(jq -r '.messages[-1].snippet // ""' <<<"$snapshot")"
-      if ! notify_reply "$title" "$url" "Reply from $who${subject:+ — $subject}${snippet:+: $snippet}"; then
+      if ! notify_reply "$title" "$url" "Reply from $who${subject:+ — $subject}${snippet:+: $snippet}" "nagsly-gmail-$id"; then
         failed=1; continue
       fi
       printf 'nagsly: reply received from %s — %s\n' "$who" "$url"
+    elif [[ "$previous" == replied && "$state" == waiting ]]; then
+      if ! clear_reply "nagsly-gmail-$id"; then
+        failed=1; continue
+      fi
     fi
     updated="$MONITORS_D/.$(basename "$file").tmp.$$"
     state_json="$(json_quote "$state")"
@@ -204,6 +221,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       esac
       ;;
     --sync) sync_monitors ;;
+    --notify) shift; notify_worker "$@" ;;
     -h|--help|help) usage ;;
     *) register "${1:-}" ;;
   esac
