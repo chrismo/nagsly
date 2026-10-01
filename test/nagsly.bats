@@ -1615,6 +1615,160 @@ EOF
   [[ "$output" == *"fake"* ]] || false
 }
 
+script_register() {
+  mkdir -p "$TEST_DIR/work"
+  export SCRIPT_RUN_LOG="$TEST_DIR/runs"
+  printf '%s\n' 'pwd >> "$SCRIPT_RUN_LOG"' "printf '%s\\n' 'Alice 96%' 'Bob 99%'" 'echo diagnostic >&2' 'exit "${CHECK_RC:-1}"' > "$TEST_DIR/work/check.sh"
+  PATH="$BATS_TEST_DIRNAME/../plugins:$PATH" run "$BIN" monitor add script "$TEST_DIR/work/check.sh" --title 'Token budgets' --every "${SCRIPT_EVERY:-1h}"
+  [ "$status" -eq 0 ]
+  SCRIPT_FILE=("$NAGSLY_DIR"/monitors.d/script-*.json)
+}
+
+@test "script registration stores duration, absolute path and cwd without running, and deduplicates" {
+  SCRIPT_EVERY=1h30m script_register
+  [ ! -e "$SCRIPT_RUN_LOG" ]
+  [ "$(jq -r .every_seconds "${SCRIPT_FILE[0]}")" = 5400 ]
+  [ "$(jq -r .script "${SCRIPT_FILE[0]}")" = "$(cd "$TEST_DIR/work" && pwd -P)/check.sh" ]
+  [ "$(jq -r .cwd "${SCRIPT_FILE[0]}")" = "$PWD" ]
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor add script "$TEST_DIR/work/check.sh" --every 6m
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .every_seconds "${SCRIPT_FILE[0]}")" = 5400 ]
+}
+
+@test "script registration rejects invalid or sub-minute intervals" {
+  printf 'exit 0\n' > "$TEST_DIR/check.sh"
+  for interval in 10s nonsense -1h '1h"'; do
+    PATH="$PWD/plugins:$PATH" run "$BIN" monitor add script "$TEST_DIR/check.sh" --every "$interval"
+    [ "$status" -ne 0 ]
+  done
+  [ ! -d "$NAGSLY_DIR/monitors.d" ]
+}
+
+@test "script scheduler runs on first tick, repeats multiline alerts only when due, and manual sync forces" {
+  script_register
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifications"
+  printf '{"sync_plugins":[]}' > "$NAGSLY_DIR/config.json"
+  PATH="$PWD/plugins:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .message "$NAGSLY_TEST_NOTIFY_LOG")" = $'Alice 96%\nBob 99%' ]
+  [ "$(jq -r .status "${SCRIPT_FILE[0]}")" = alert ]
+  [ "$(<"$SCRIPT_RUN_LOG")" = "$PWD" ]
+  NAGSLY_NOW=1784000060 PATH="$PWD/plugins:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$SCRIPT_RUN_LOG" | tr -d ' ')" = 1 ]
+  NAGSLY_NOW=1784003600 PATH="$PWD/plugins:$PATH" run "$BIN" sync --due
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$NAGSLY_TEST_NOTIFY_LOG" | tr -d ' ')" = 2 ]
+  PATH="$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$NAGSLY_TEST_NOTIFY_LOG" | tr -d ' ')" = 3 ]
+}
+
+@test "script errors notify once, stay failed between ticks, and successful checks reset suppression" {
+  script_register
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifications"
+  printf '{"sync_plugins":[]}' > "$NAGSLY_DIR/config.json"
+  CHECK_RC=2 PATH="$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *diagnostic* ]]
+  [ "$(jq -r .last_exit "${SCRIPT_FILE[0]}")" = 2 ]
+  CHECK_RC=2 NAGSLY_NOW=1784000060 PATH="$PWD/plugins:$PATH" run "$BIN" sync --due
+  [ "$status" -ne 0 ]
+  CHECK_RC=2 PATH="$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [ "$(wc -l < "$NAGSLY_TEST_NOTIFY_LOG" | tr -d ' ')" = 1 ]
+  CHECK_RC=0 PATH="$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "${SCRIPT_FILE[0]}")" = healthy ]
+  [ "$(tail -1 "$NAGSLY_TEST_NOTIFY_LOG" | jq -r .action)" = clear ]
+  CHECK_RC=2 PATH="$PWD/plugins:$PATH" run "$BIN" sync
+  [ "$status" -ne 0 ]
+  [ "$(wc -l < "$NAGSLY_TEST_NOTIFY_LOG" | tr -d ' ')" = 3 ]
+}
+
+@test "script timeout kills descendants and still checks later monitors" {
+  script_register
+  printf 'sleep 30 &\necho $! > "$NAGSLY_DIR/child.pid"\nwait\n' > "$TEST_DIR/work/check.sh"
+  printf 'exit 0\n' > "$TEST_DIR/second.sh"
+  PATH="$PWD/plugins:$PATH" run "$BIN" monitor add script "$TEST_DIR/second.sh"
+  [ "$status" -eq 0 ]
+  NAGSLY_SCRIPT_TIMEOUT=1 PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .last_exit "${SCRIPT_FILE[0]}")" = 124 ]
+  ! kill -0 "$(<"$NAGSLY_DIR/child.pid")" 2>/dev/null
+  [ "$(jq -r 'select(.script | endswith("second.sh")) | .status' "$NAGSLY_DIR"/monitors.d/script-*.json)" = healthy ]
+}
+
+@test "script notifications are grouped, visual-only, nonblocking and retry failed clears" {
+  script_register
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  export NOTIFY_ORDER_LOG="$TEST_DIR/notify-order"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "$NOTIFY_ORDER_LOG"' > "$pdir/launchctl"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "$NOTIFY_ORDER_LOG"' 'exit "${REMOVE_FAIL:-0}"' > "$pdir/alerter"
+  chmod +x "$pdir/launchctl" "$pdir/alerter"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *'submit -l'*'--notify Token budgets'*$'Alice 96%\nBob 99%'* ]]
+  local id; id="$(jq -r .id "${SCRIPT_FILE[0]}")"
+  NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --notify 'Token budgets' $'Alice 96%\nBob 99%' "nagsly-$id" "$pdir/alerter" test-label
+  [ "$status" -eq 0 ]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--group nagsly-$id"*'remove test-label'* ]]
+  ! grep -E -- '--sound|--timeout' "$NOTIFY_ORDER_LOG"
+  CHECK_RC=0 REMOVE_FAIL=1 NAGSLY_NOW=1784003600 NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .notification_pending "${SCRIPT_FILE[0]}")" = true ]
+  CHECK_RC=0 NAGSLY_NOW=1784007200 NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .notification_pending "${SCRIPT_FILE[0]}")" = false ]
+  [ "$(grep -c -- '--remove' "$NOTIFY_ORDER_LOG")" = 2 ]
+}
+
+@test "script checks use the captured working directory, ignore healthy stdout, and refuse overlap" {
+  local registration_dir="$PWD"
+  cd "$TEST_DIR"
+  script_register
+  cd "$registration_dir"
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifications"
+  CHECK_RC=0 PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -eq 0 ]
+  [ "$(<"$SCRIPT_RUN_LOG")" = "$(cd "$TEST_DIR" && pwd -P)" ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+  mkdir "$NAGSLY_DIR/state/script.lock"
+  PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'already running or stale lock'* ]]
+  [ "$(wc -l < "$SCRIPT_RUN_LOG" | tr -d ' ')" = 1 ]
+}
+
+@test "script notification errors remain retryable without hiding script errors" {
+  script_register
+  local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
+  printf '#!/bin/bash\nexit 1\n' > "$pdir/launchctl"
+  printf '#!/bin/bash\nexit 0\n' > "$pdir/alerter"
+  chmod +x "$pdir/launchctl" "$pdir/alerter"
+  CHECK_RC=2 NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .error_notified "${SCRIPT_FILE[0]}")" = false ]
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifications"
+  CHECK_RC=2 NAGSLY_NOW=1784003600 PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .error_notified "${SCRIPT_FILE[0]}")" = true ]
+  [ "$(jq -r .action "$NAGSLY_TEST_NOTIFY_LOG")" = error ]
+}
+
+@test "script alert falls back for empty stdout and execution failures become errors" {
+  script_register
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifications"
+  printf 'exit 1\n' > "$TEST_DIR/work/check.sh"
+  PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .message "$NAGSLY_TEST_NOTIFY_LOG")" = 'Script needs attention' ]
+  rm "$TEST_DIR/work/check.sh"
+  NAGSLY_NOW=1784003600 PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .status "${SCRIPT_FILE[0]}")" = error ]
+}
+
 # (No test for the "zero plugins installed" hint: the binary's PATH self-heal
 # reintroduces ~/.local/bin — where the real nagsly-fetch-gws lives — so a test
 # can't reliably present an empty plugin set. The hint path is exercised by hand

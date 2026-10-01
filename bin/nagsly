@@ -795,6 +795,7 @@ cmd_stop() {
 # and reported, then the remaining integrations still run.
 sync_every() {
   local name="$1" value
+  [[ "$name" != script ]] || { printf '60'; return 0; }
   value="$(super -dynamic -f line -c "coalesce(sync_every[\"$name\"], 900)" "$CONFIG_FILE" 2>/dev/null)" || return 1
   [[ "$value" =~ ^[0-9]{1,8}$ ]] || return 1
   value=$((10#$value))
@@ -803,8 +804,16 @@ sync_every() {
 }
 
 sync_plugins() {
-  [[ -f "$CONFIG_FILE" ]] || { printf 'gws'; return 0; }
-  super -dynamic -f line -c 'unnest coalesce(sync_plugins, ["gws"]) | values this' "$CONFIG_FILE"
+  local plugins
+  if [[ -f "$CONFIG_FILE" ]]; then
+    plugins="$(super -dynamic -f line -c 'unnest coalesce(sync_plugins, ["gws"]) | values this' "$CONFIG_FILE")" || return 1
+  else
+    plugins=gws
+  fi
+  printf '%s\n' "$plugins"
+  if compgen -G "$MONITORS_D/script-*.json" >/dev/null && ! grep -qx script <<<"$plugins"; then
+    printf 'script\n'
+  fi
 }
 
 sync_one() {
@@ -842,6 +851,12 @@ sync_one() {
     echo "nagsly sync: NAGSLY_SYNC_TIMEOUT must be an integer from 1 to 3600" >&2
     return 1
   }
+  if [[ "$name" == script && -z "${NAGSLY_SYNC_TIMEOUT:-}" ]]; then
+    local script_timeout="${NAGSLY_SCRIPT_TIMEOUT:-60}" script_files=("$MONITORS_D"/script-*.json)
+    if [[ "$script_timeout" =~ ^[0-9]{1,4}$ ]] && (( 10#$script_timeout >= 1 && 10#$script_timeout <= 3600 )); then
+      timeout=$((timeout + ${#script_files[@]} * (10#$script_timeout + 2)))
+    fi
+  fi
   mkdir -p "$STATE_DIR"
   local last_success=0
   if [[ -f "$state_file" ]]; then
@@ -884,7 +899,7 @@ sync_one() {
       waitpid($pid, 0);
       my $status = $?;
       exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
-    ' "$timeout" "$plugin" || rc=$?
+    ' "$timeout" env NAGSLY_SYNC_FORCE="$force" "$plugin" || rc=$?
     if (( rc == 124 )); then echo "nagsly sync: $name timed out after ${timeout}s" >&2; fi
   fi
   if (( rc == 0 )); then

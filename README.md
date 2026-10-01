@@ -16,8 +16,8 @@ heads-down.
   The bundled `nagsly-fetch-gws` fetches Google Calendar events (via the
   [Google Workspace CLI](https://github.com/googleworkspace/cli)).
 - **Sync integrations** (`nagsly-sync-<name>` on PATH) perform one bounded
-  network check when the core scheduler says they are due. PR and Gmail monitors
-  use `gh` and the Google Workspace CLI respectively.
+  check when the core scheduler says they are due. PR and Gmail monitors
+  use `gh` and the Google Workspace CLI respectively; script monitors run local Bash scripts.
 - One binary, git-style subcommands.
 
 ```
@@ -130,6 +130,56 @@ mail; some browser-only Gmail IDs cannot be resolved. A URL is checked directly
 Configure `sync_plugins` and `sync_every` to enable regular checks (example
 PR/Gmail cadence: 120s).
 
+## Script monitors
+
+```bash
+nagsly monitor add script ~/bin/check-token-budgets.sh --title "Token budgets" --every 1h
+nagsly sync           # check immediately, regardless of intervals
+nagsly monitor list
+nagsly monitor rm <monitor-id>
+```
+
+Registration stores the absolute script path and current working directory,
+without executing the script. Re-registering the same path and directory leaves
+its settings and state unchanged; remove it first to change settings. Script
+monitors automatically enable the bundled script sync integration—no config
+editing required.
+
+`--every` accepts SuperDB duration strings (`6m`, `1h30m`), defaults to `1h`,
+and must be at least `1m`. The first check runs on the next available sync tick;
+later checks run when their individual intervals have elapsed, with the existing
+60-second scheduler resolution. Manual `nagsly sync` forces all scripts to run.
+
+Scripts run with `/bin/bash`, in the registration directory, with no arguments
+and stdin closed. They do not inherit your interactive terminal environment or
+source shell startup files. Set up credentials and dependencies for unattended
+execution in the script itself. Script paths under CloudStorage may be blocked
+by macOS background-execution restrictions; keep them on local disk.
+
+- **Exit 0:** healthy; clear the script's outstanding notification.
+- **Exit 1:** show one sticky, visual-only notification with all stdout,
+  including line breaks. Empty stdout falls back to “Script needs attention”.
+  The script owns formatting and reasonable output length.
+- **Other exit codes, execution failures, or timeouts:** mark the check as failed
+  and notify once when entering the error state. Further errors remain visible
+  in scheduler health and logs without repeated notifications. Exit 0 or 1
+  resets error suppression; recovery itself produces no extra notification.
+- **stderr:** diagnostics only, recorded in `nagsly logs` and the sync agent's
+  stderr log (`~/Library/Logs/nagsly-sync.err.log`), not included in normal alerts.
+
+Dismissing a notification does not affect scheduling. Every check returning 1
+notifies again, even for identical output. A new notification replaces the
+previous one for that script; there is no per-user tracking or content deduplication.
+Delivery uses a separate launchd job, so an undismissed notification does not
+block checks. Notification delivery errors also make the sync pass fail.
+
+`NAGSLY_SCRIPT_TIMEOUT` bounds each script's process group (default 60 seconds,
+range 1–3600). Scripts run sequentially, and overlapping script syncs are refused.
+The core's default integration timeout expands to accommodate all registered
+scripts; an explicit `NAGSLY_SYNC_TIMEOUT` still imposes its configured limit.
+After a forcibly interrupted sync, a stale `state/script.lock` may require manual
+removal once you have confirmed no script check is running.
+
 ## Calendar feed (gws plugin)
 
 ```bash
@@ -186,7 +236,11 @@ notification behavior.
 For background updates, configure `K` in `sync_plugins` and provide a separate
 `nagsly-sync-K` executable on PATH. Core runs it with no arguments on the
 configured cadence (minimum 60 seconds), records success/failure, and bounds its
-process group with `NAGSLY_SYNC_TIMEOUT`. Sync adapters must report errors by
+process group with `NAGSLY_SYNC_TIMEOUT`. The bundled script integration is
+implicitly included while script monitors exist and ticks every 60 seconds;
+its adapter owns each script's individual interval. Core supplies
+`NAGSLY_SYNC_FORCE=1` on manual sync and `0` on scheduled sync.
+Sync adapters must report errors by
 nonzero exit and keep network checks off the alarm path. The bundled PR/Gmail
 sync adapters delegate to their respective monitor plugins' `--sync` mode;
 that internal flag is not a requirement for other plugins. No manifest or

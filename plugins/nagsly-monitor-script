@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export ASDF_SUPERDB_VERSION=0.3.0
+CONFIG_DIR="${NAGSLY_DIR:-$HOME/.config/nagsly}"
+MONITORS_D="$CONFIG_DIR/monitors.d"
+
+usage() {
+  echo 'Usage: nagsly monitor add script <bash-script> [--title <title>] [--every <duration>]'
+  echo 'Default interval: 1h (minimum 1m). Scripts run with Bash in the registration directory.'
+  echo 'Exit 0: healthy; exit 1: notify with stdout; other exits: check error.'
+  echo 'NAGSLY_SCRIPT_TIMEOUT: seconds per script (default 60, maximum 3600).'
+}
+
+register() {
+  local script="${1:-}" title='' every=1h seconds id file cwd
+  [[ -n "$script" ]] || { usage >&2; return 2; }
+  shift
+  while (( $# )); do
+    case "$1" in
+      --title|--every)
+        [[ $# -ge 2 ]] || { usage >&2; return 2; }
+        if [[ "$1" == --title ]]; then title="$2"; else every="$2"; fi
+        shift 2 ;;
+      *) usage >&2; return 2 ;;
+    esac
+  done
+  [[ -f "$script" && -r "$script" ]] || { echo "nagsly-script: unreadable script: $script" >&2; return 2; }
+  seconds="$(printf '%s' "$every" | jq -Rs . | super -f line -c 'values cast(cast(this, <duration>) / 1s, <int64>)' - 2>/dev/null)" || seconds=invalid
+  if [[ ! "$seconds" =~ ^[0-9]{1,12}$ ]] || (( seconds < 60 )); then
+    echo 'nagsly-script: interval must be a SuperDB duration of at least 1m' >&2; return 2
+  fi
+  cwd="$(pwd -P)"
+  script="$(cd "$(dirname "$script")" && pwd -P)/$(basename "$script")"
+  [[ -n "$title" ]] || title="$(basename "$script")"
+  id="script-$(printf '%s\n%s' "$script" "$cwd" | shasum -a 256 | cut -c1-12)"
+  mkdir -p "$MONITORS_D"
+  file="$MONITORS_D/$id.json"
+  if [[ -f "$file" ]]; then
+    echo "nagsly: script already registered ($id); remove it to change settings"
+    return 0
+  fi
+  jq -n --arg id "$id" --arg title "$title" --arg script "$script" --arg cwd "$cwd" \
+    --arg every "$every" --argjson seconds "$seconds" \
+    '{id:$id,kind:"script",title:$title,script:$script,cwd:$cwd,every:$every,every_seconds:$seconds,status:"waiting",last_attempt:0,last_exit:0,error_notified:false,notification_pending:false}' > "$file.tmp.$$"
+  mv -f "$file.tmp.$$" "$file"
+  echo "nagsly: registered $title ($id), every $every"
+}
+
+notify_worker() {
+  local title="$1" body="$2" group="$3" alerter_bin="$4" label="$5" rc=0
+  "$alerter_bin" --title "$title" --message "$body" --group "$group" || rc=$?
+  launchctl remove "$label" || return 1
+  return "$rc"
+}
+
+notify() {
+  local action="$1" title="$2" body="$3" group="$4" label
+  if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then
+    jq -nc --arg action "$action" --arg title "$title" --arg message "$body" --arg group "$group" \
+      '{action:$action,title:$title,message:$message,group:$group}' >> "$NAGSLY_TEST_NOTIFY_LOG"
+    return
+  fi
+  [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
+  command -v alerter >/dev/null || { echo 'nagsly-script: alerter not found' >&2; return 1; }
+  if [[ "$action" == clear ]]; then
+    alerter --remove "$group"
+  else
+    label="com.chrismo.nagsly.script.$$.${RANDOM}"
+    launchctl submit -l "$label" -e "$CONFIG_DIR/notification.err.log" -- \
+      "$(command -v nagsly-monitor-script)" --notify "$title" "$body" "$group" "$(command -v alerter)" "$label" || {
+      echo 'nagsly-script: notification submission failed' >&2; return 1;
+    }
+  fi
+}
+
+run_script() {
+  perl -e '
+    my ($timeout, $cwd, $script) = splice @ARGV, 0, 3;
+    my $pid = fork();
+    die "fork failed: $!" unless defined $pid;
+    if ($pid == 0) {
+      setpgrp(0, 0);
+      chdir $cwd or die "chdir $cwd: $!";
+      open STDIN, "<", "/dev/null" or die "stdin: $!";
+      exec "/bin/bash", $script or die "exec: $!";
+    }
+    sub stop_child {
+      kill "TERM", -$pid;
+      sleep 1;
+      kill "KILL", -$pid;
+      waitpid($pid, 0);
+    }
+    $SIG{ALRM} = sub { stop_child(); exit 124; };
+    $SIG{TERM} = $SIG{INT} = sub { stop_child(); exit 143; };
+    alarm $timeout;
+    waitpid($pid, 0);
+    my $status = $?;
+    alarm 0;
+    exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
+  ' "$1" "$2" "$3"
+}
+
+sync_monitors() {
+  local timeout="${NAGSLY_SCRIPT_TIMEOUT:-60}" now="${NAGSLY_NOW:-$(date +%s)}"
+  if [[ ! "$timeout" =~ ^[0-9]{1,4}$ ]] || (( 10#$timeout < 1 || 10#$timeout > 3600 )); then
+    echo 'nagsly-script: NAGSLY_SCRIPT_TIMEOUT must be 1 to 3600 seconds' >&2; return 1
+  fi
+  mkdir -p "$CONFIG_DIR/state"
+  local lock="$CONFIG_DIR/state/script.lock"
+  mkdir "$lock" 2>/dev/null || { echo "nagsly-script: check already running or stale lock: $lock" >&2; return 1; }
+  trap 'rm -rf "$CONFIG_DIR/state/script.lock"' EXIT
+  local file record id title script cwd every last previous rc body err status notified pending failed=0 work
+  work="$(mktemp -d "$lock/output.XXXXXX")"
+  shopt -s nullglob
+  for file in "$MONITORS_D"/script-*.json; do
+    if [[ -L "$file" ]] || ! jq -e '
+      .kind == "script" and (.id | test("^script-[a-zA-Z0-9][a-zA-Z0-9-]*$")) and
+      (.title | type == "string") and (.script | startswith("/")) and (.cwd | startswith("/")) and
+      (.every_seconds | type == "number" and . >= 60 and floor == .) and
+      (.last_attempt | type == "number" and . >= 0 and floor == .) and
+      (.error_notified | type == "boolean") and (.status | type == "string")
+    ' "$file" >/dev/null 2>&1; then
+      echo "nagsly-script: invalid monitor: $file" >&2; failed=1; continue
+    fi
+    record="$(<"$file")"
+    id="$(jq -r .id <<<"$record")"
+    [[ "$file" == "$MONITORS_D/$id.json" ]] || { echo "nagsly-script: mismatched id: $file" >&2; failed=1; continue; }
+    title="$(jq -r .title <<<"$record")"
+    script="$(jq -r .script <<<"$record")"; cwd="$(jq -r .cwd <<<"$record")"
+    every="$(jq -r .every_seconds <<<"$record")"; last="$(jq -r .last_attempt <<<"$record")"
+    previous="$(jq -r .status <<<"$record")"; notified="$(jq -r .error_notified <<<"$record")"
+    pending="$(jq -r '.notification_pending // false' <<<"$record")"
+    if [[ "${NAGSLY_SYNC_FORCE:-0}" != 1 ]] && (( last > 0 && now - last < every )); then
+      [[ "$previous" != error ]] || failed=1
+      continue
+    fi
+    rc=0
+    run_script "$((10#$timeout))" "$cwd" "$script" > "$work/stdout" 2> "$work/stderr" || rc=$?
+    body="$(<"$work/stdout")"; err="$(<"$work/stderr")"
+    if [[ -n "$err" ]]; then
+      printf 'nagsly-script: %s stderr:\n%s\n' "$title" "$err" >&2
+      printf '%s script %s stderr: %s\n' "$(date '+%F %T')" "$id" "$err" >> "$CONFIG_DIR/nagsly.log"
+    fi
+    case "$rc" in
+      0)
+        status=healthy; notified=false
+        if [[ "$pending" == true ]]; then
+          if notify clear "$title" '' "nagsly-$id"; then pending=false; else failed=1; fi
+        fi ;;
+      1)
+        status=alert; notified=false
+        if notify alert "$title" "${body:-Script needs attention}" "nagsly-$id"; then pending=true; else failed=1; fi ;;
+      *)
+        status=error; failed=1
+        body="Check failed (exit $rc). See nagsly logs."
+        [[ "$rc" != 124 ]] || body="Check timed out after ${timeout}s. See nagsly logs."
+        echo "nagsly-script: $title: $body" >&2
+        printf '%s script %s: %s\n' "$(date '+%F %T')" "$id" "$body" >> "$CONFIG_DIR/nagsly.log"
+        if [[ "$notified" != true ]]; then
+          if notify error "$title" "$body" "nagsly-$id"; then notified=true; pending=true; fi
+        fi ;;
+    esac
+    jq --arg status "$status" --argjson now "$now" --argjson rc "$rc" --argjson notified "$notified" --argjson pending "$pending" \
+      '.status=$status | .last_attempt=$now | .last_exit=$rc | .error_notified=$notified | .notification_pending=$pending' \
+      <<<"$record" > "$file.tmp.$$"
+    mv -f "$file.tmp.$$" "$file"
+  done
+  return "$failed"
+}
+
+case "${1:-}" in
+  --register) shift; case "${1:-}" in -h|--help|help) usage ;; *) register "$@" ;; esac ;;
+  --sync) sync_monitors ;;
+  --notify) shift; notify_worker "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

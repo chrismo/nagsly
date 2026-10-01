@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+command -v nagsly-monitor-script >/dev/null 2>&1 || {
+  echo 'nagsly-sync-script: nagsly-monitor-script is not installed on PATH' >&2
+  exit 127
+}
+exec nagsly-monitor-script --sync
