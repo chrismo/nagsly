@@ -439,3 +439,14 @@ human-readable. `id` is stable across re-fetch so re-fetching doesn't thrash.
 Each write is atomic (tmp file, then `mv`), and a fetch overwrites its own
 source file wholesale — no merge logic in fetchers, no way to clobber another
 source or your manual events.
+
+### A possible language port (low priority)
+
+Keep Bash while maintenance stays comfortable. If scheduler and process-control
+complexity warrants a rewrite, Go is the pragmatic choice for the same CLI with
+less shell plumbing; Rust is also a good fit, with more implementation effort.
+Swift becomes attractive for native macOS integration, and could eliminate some 
+of the audio and notification tooling and not just be a CLI port;
+Python simplifies the code but adds runtime management. Any port should preserve
+the JSON/plugin contracts, separate alarm and sync jobs, and self-bounding audio
+loop — a new language does not fix launchd's constraints.
