@@ -660,6 +660,49 @@ EOF
   [ "$(wc -l < "$TEST_DIR/sync.calls" | tr -d ' ')" -eq 2 ]
 }
 
+@test "targeted sync forces only the named integration even when not configured" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$NAGSLY_SYNC_FORCE" >> "$NAGSLY_DIR/calls"' > "$pdir/nagsly-sync-fake"
+  chmod +x "$pdir/nagsly-sync-fake"
+  printf '{"sync_plugins":["not-installed"],"sync_every":{"fake":900}}' > "$NAGSLY_DIR/config.json"
+  for attempt in 1 2; do
+    PATH="$pdir:$PATH" run "$BIN" sync fake
+    [ "$status" -eq 0 ]
+  done
+  [ "$(<"$NAGSLY_DIR/calls")" = $'1\n1' ]
+  [ "$(jq -r .last_error "$NAGSLY_DIR/state/sync-fake.json")" = null ]
+  [ ! -e "$NAGSLY_DIR/state/sync-not-installed.json" ]
+}
+
+@test "targeted script sync skips other configured integrations and forces script cadence" {
+  script_register
+  printf '{"sync_plugins":["not-installed"]}' > "$NAGSLY_DIR/config.json"
+  for attempt in 1 2; do
+    PATH="$PWD/plugins:$PATH" run "$BIN" sync script
+    [ "$status" -eq 0 ]
+  done
+  [ "$(wc -l < "$SCRIPT_RUN_LOG" | tr -d ' ')" = 2 ]
+  [ ! -e "$NAGSLY_DIR/state/sync-not-installed.json" ]
+}
+
+@test "targeted sync rejects unsafe names and extra arguments" {
+  for name in '../bad' '-bad' 'bad/name'; do
+    run "$BIN" sync "$name"
+    [ "$status" -ne 0 ]
+  done
+  run "$BIN" sync script gmail
+  [ "$status" -ne 0 ]
+  run "$BIN" sync --due script
+  [ "$status" -ne 0 ]
+  [ ! -e "$NAGSLY_DIR/state/sync.lock" ]
+}
+
+@test "targeted sync records missing integration failures" {
+  run "$BIN" sync not-installed
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .last_error "$NAGSLY_DIR/state/sync-not-installed.json")" = 127 ]
+}
+
 @test "sync records a failed attempt and continues with later integrations" {
   local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
   printf '#!/usr/bin/env bash\nexit 7\n' > "$pdir/nagsly-sync-broken"

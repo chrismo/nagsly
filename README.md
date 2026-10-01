@@ -34,6 +34,7 @@ nagsly logs -f                # follow raw log, including heartbeats
 nagsly stop                   # silence a currently-firing alarm
 nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH (not calendar-only)
 nagsly sync                   # check all configured integrations now
+nagsly sync <name>            # check only this integration now (e.g. script)
 nagsly sync --due             # scheduler mode: check only due integrations
 nagsly monitor add <kind> [args] # register via nagsly-monitor-<kind> on PATH
 nagsly monitor add            # show installed monitor kinds and usage
@@ -134,7 +135,7 @@ PR/Gmail cadence: 120s).
 
 ```bash
 nagsly monitor add script ~/bin/check-token-budgets.sh --title "Token budgets" --every 1h
-nagsly sync           # check immediately, regardless of intervals
+nagsly sync script    # check only scripts immediately, regardless of intervals
 nagsly monitor list
 nagsly monitor rm <monitor-id>
 ```
@@ -148,7 +149,10 @@ editing required.
 `--every` accepts SuperDB duration strings (`6m`, `1h30m`), defaults to `1h`,
 and must be at least `1m`. The first check runs on the next available sync tick;
 later checks run when their individual intervals have elapsed, with the existing
-60-second scheduler resolution. Manual `nagsly sync` forces all scripts to run.
+60-second scheduler resolution. Manual `nagsly sync script` forces all scripts
+to run without checking other integrations; `nagsly sync` forces all integrations.
+Targeted sync accepts a safe integration name, even if it isn't configured for
+scheduled checks, and uses the same locking, timeout, and health reporting.
 
 Scripts run with `/bin/bash`, in the registration directory, with no arguments
 and stdin closed. They do not inherit your interactive terminal environment or

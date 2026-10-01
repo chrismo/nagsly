@@ -926,11 +926,14 @@ sync_unlock() {
 }
 
 cmd_sync() {
-  local force=0 name rc failed=0
+  local force=1 target='' name failed=0
+  (( $# <= 1 )) || die 'sync: expected [<integration>|--due]'
   case "${1:-}" in
-    "") force=1 ;;                 # explicit user request: check all now
-    --due) force=0 ;;              # launchd path: honor each integration cadence
-    *) die "sync: unknown option '$1' (use --due)" ;;
+    "") ;;
+    --due) force=0 ;;
+    *)
+      monitor_kind_valid "$1" || die "sync: invalid integration '$1' (use <integration> or --due)"
+      target="$1" ;;
   esac
   mkdir -p "$STATE_DIR"
   local lock_dir="$STATE_DIR/sync.lock" lock_pid
@@ -952,7 +955,11 @@ cmd_sync() {
   printf '%s\n' "$$" > "$lock_dir/pid"
   trap sync_unlock EXIT
   local plugins
-  plugins="$(sync_plugins)" || die "could not read sync_plugins in $CONFIG_FILE"
+  if [[ -n "$target" ]]; then
+    plugins="$target"
+  else
+    plugins="$(sync_plugins)" || die "could not read sync_plugins in $CONFIG_FILE"
+  fi
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     sync_one "$name" "$force" || failed=1
@@ -1070,7 +1077,7 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly logs [-f]              heartbeat summary + activity, oldest-to-newest (-f: follow)
   nagsly stop                   silence a currently-firing alarm
   nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH (any fetch plugin)
-  nagsly sync [--due]           check integrations now; --due honors their cadence
+  nagsly sync [<name>|--due]    check all or one integration; --due honors cadence
   nagsly monitor add <kind> [args] register via nagsly-monitor-<kind> on PATH
   nagsly monitor [list]          list active/completed monitors
   nagsly monitor rm <id>        remove a monitor
