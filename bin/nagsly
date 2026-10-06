@@ -18,16 +18,7 @@
 # registering the fire as its own launchd job trips a per-arm "Background
 # Activity" notification. Inline firing avoids both.
 #
-#   Subcommands (user-facing):
-#     (none)                  local overview of upcoming events and monitors
-#     add "<title>" <when>    append an event to manual.json
-#     list                    upcoming timed events across event sources
-#     rm <id>                 remove one event from manual.json
-#     clear [source]          wipe a source's file (default: manual)
-#     poll                    launchd entry point: fire modes due for the next meeting
-#     status                  read-only "is it working" rollup
-#     stop                    silence a currently-firing alarm
-#     fetch <name> [args...]  run nagsly-fetch-<name> on PATH; pass args through
+#   User-facing subcommands: see usage() (`nagsly --help`).
 #
 #   Internal (not user-facing, dispatched from the same binary):
 #     build <source>          normalize raw source JSON (stdin) -> canonical
@@ -304,10 +295,12 @@ cmd_build() {
 }
 
 cmd_add() {
-  local title="${1:?add: title required}"
-  local when="${2:?add: <when> required (HH:MM | ISO | \"tomorrow HH:MM\" | +Nm | +Nh)}"
-  local iso
-  iso="$(resolve_when "$when")" || die "could not parse <when>: '$when'"
+  local add_usage='usage: nagsly add "<title>" <when>   <when>: HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO'
+  (( $# >= 2 )) || die "$add_usage"
+  (( $# == 2 )) || die "add takes exactly <title> and <when>; quote a multi-word <when>, e.g. \"${*:2}\""
+  local title="$1" when="$2" iso
+  iso="$(resolve_when "$when")" || die "could not parse <when>: '$when'
+$add_usage"
   # Reject a stray tab in the title — it would corrupt the TSV round-trip.
   [[ "$title" == *$'\t'* ]] && die "title may not contain a tab"
 
@@ -463,8 +456,8 @@ cmd_clear() {
   echo "nagsly: cleared $source.json"
 }
 
-# Discover executable plugins on PATH by prefix; callers sort/deduplicate the
-# short names. Neither discovery nor help runs the plugins.
+# Discover executable plugins on PATH by prefix, as "name<TAB>path" in PATH
+# order; callers sort/deduplicate. Neither discovery nor help runs the plugins.
 list_plugins() {
   local prefix="$1" dir p base name
   while IFS=: read -rd: dir; do
@@ -473,7 +466,7 @@ list_plugins() {
       [[ -x "$p" && -f "$p" ]] || continue
       base="${p##*/}"
       name="${base#nagsly-"$prefix"-}"
-      monitor_kind_valid "$name" && printf '%s\n' "$name"
+      if monitor_kind_valid "$name"; then printf '%s\t%s\n' "$name" "$p"; fi
     done
   done <<< "$PATH:"
   # (the trailing ':' makes the last PATH entry a complete field for read -d:)
@@ -482,7 +475,7 @@ list_plugins() {
 # Print sorted, deduplicated names with a consistent separator.
 plugin_names() {
   local names name joined=""
-  names="$(list_plugins "$1" | sort -u)"
+  names="$(list_plugins "$1" | cut -f1 | sort -u)"
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     joined="${joined:+$joined, }$name"
@@ -499,6 +492,19 @@ fetch_hint() {
     echo 'no nagsly-fetch-* plugins found on PATH.'
     echo 'install one (e.g. the bundled gws feeder) so nagsly fetch gws works.'
   fi
+}
+
+# Shows the first match on PATH per (type, name): the copy that would run.
+cmd_plugins() {
+  local type rows
+  rows="$(for type in fetch monitor sync; do
+    list_plugins "$type" | awk -v t="$type" '{ print t "\t" $0 }'
+  done | awk -F'\t' '!seen[$1 FS $2]++' | sort -t$'\t' -k1,1 -k2,2)"
+  if [[ -z "$rows" ]]; then
+    echo 'no nagsly plugins found on PATH (looked for nagsly-{fetch,monitor,sync}-<name>)'
+    return 0
+  fi
+  jq -Rc 'split("\t") | {type: .[0], name: .[1], path: .[2]}' <<< "$rows" | grdy --plain --no-header
 }
 
 monitor_add_hint() {
@@ -1066,26 +1072,35 @@ usage() {
   cat <<'EOF'
 nagsly — a continuous, dismiss-to-stop alarm for macOS
 
-  nagsly add "<title>" <when>   add an event (manual). <when>:
-                                  HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO
-  nagsly                        overview: upcoming events and stored monitors
-  nagsly list                   upcoming timed events across event sources, next-first
-  nagsly rm <id>                remove one manual event
-  nagsly clear [source]         wipe a source's file (default: manual)
-  nagsly poll                   launchd entry point: fire modes due now
-  nagsly status                 read-only "is it working" rollup
-  nagsly logs [-f]              heartbeat summary + activity, oldest-to-newest (-f: follow)
-  nagsly stop                   silence a currently-firing alarm
-  nagsly fetch <name> [args]    run nagsly-fetch-<name> on PATH (any fetch plugin)
-  nagsly sync [<name>|--due]    check all or one integration; --due honors cadence
-  nagsly monitor add <kind> [args] register via nagsly-monitor-<kind> on PATH
-  nagsly monitor [list]          list active/completed monitors
-  nagsly monitor rm <id>        remove a monitor
+  nagsly                            overview: upcoming events and stored monitors
+  nagsly add "<title>" <when>       add an event (manual). quote a multi-word <when>:
+                                    HH:MM | "tomorrow HH:MM" | +Nm | +Nh | full ISO
+  nagsly list                       upcoming timed events across event sources, next-first
+  nagsly rm <id>                    remove one manual event
+  nagsly clear [source]             wipe a source's file (default: manual)
+  nagsly status                     read-only "is it working" rollup
+  nagsly logs [-f]                  heartbeat summary + activity, oldest-to-newest (-f: follow)
+  nagsly stop                       silence a currently-firing alarm
+  nagsly poll                       launchd entry point: fire modes due now
+  nagsly plugins                    list fetch/monitor/sync plugins found on PATH
+  nagsly fetch <name> [args]        run nagsly-fetch-<name> on PATH (any fetch plugin)
+  nagsly sync [<name>|--due]        check all or one integration; --due honors cadence
+  nagsly monitor [list]             list active/completed monitors
+  nagsly monitor add <kind> [args]  register via nagsly-monitor-<kind> on PATH
+  nagsly monitor rm <id>            remove a monitor
+
+  nagsly <command> --help           this usage; fetch and monitor add also list plugins
 EOF
 }
 
 main() {
   local cmd="${1:-}"; shift || true
+  # fetch and monitor have their own help.
+  if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
+    case "$cmd" in
+      add|list|rm|clear|status|logs|stop|poll|sync|plugins) usage; return 0 ;;
+    esac
+  fi
   case "$cmd" in
     add)    cmd_add "$@" ;;
     list)   cmd_list ;;
@@ -1098,6 +1113,7 @@ main() {
     fetch)  cmd_fetch "$@" ;;
     sync)   cmd_sync "$@" ;;
     monitor) cmd_monitor "$@" ;;
+    plugins) cmd_plugins ;;
     # internal, not user-facing (absent from usage): `build` normalizes raw
     # source JSON for plugins; `next` is poll's dry-run, kept for the test suite
     # (it drives the fire logic without producing audio).

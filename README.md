@@ -32,11 +32,12 @@ nagsly status                 # read-only "is it working" rollup
 nagsly logs                   # heartbeat summary + activity, oldest-to-newest
 nagsly logs -f                # follow raw log, including heartbeats
 nagsly stop                   # silence a currently-firing alarm
+nagsly plugins                # list fetch/monitor/sync plugins found on PATH
 nagsly fetch <name> [args]    # run nagsly-fetch-<name> on PATH (not calendar-only)
 nagsly sync                   # check all configured integrations now
 nagsly sync <name>            # check only this integration now (e.g. script)
 nagsly sync --due             # scheduler mode: check only due integrations
-nagsly monitor add <kind> [args] # register via nagsly-monitor-<kind> on PATH
+nagsly monitor add <kind> [args]  # register via nagsly-monitor-<kind> on PATH
 nagsly monitor add            # show installed monitor kinds and usage
 nagsly monitor list           # list pending and completed monitors
 nagsly monitor rm <id>        # remove a monitor
@@ -293,7 +294,8 @@ live on real local disk. Do not move it under CloudStorage.
 ## macOS deps
 
 `afplay` (sound), `launchd` (scheduling), [`alerter`](https://github.com/vjeantet/alerter)
-(visual notifications), [`super`](https://superdb.org) (SuperDB, transforms;
+(visual notifications), [`grdy`](https://github.com/chrismo/grdy) (aligned
+table output for `nagsly plugins`), [`super`](https://superdb.org) (SuperDB, transforms;
 pinned to 0.3.0 via `ASDF_SUPERDB_VERSION`), and for the calendar plugin,
 [`gws`](https://github.com/googleworkspace/cli).
 

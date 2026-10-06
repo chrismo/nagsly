@@ -803,6 +803,92 @@ EOF
   [[ "$output" == *"unknown subcommand: gmail"* ]] || false
 }
 
+@test "usage descriptions all start in one aligned column" {
+  run "$BIN" --help
+  [ "$status" -eq 0 ]
+  # Every command line ("  nagsly ...") and continuation line puts its
+  # description at the same column; a run-on or off-by-one line breaks this.
+  local cols
+  cols="$(printf '%s\n' "$output" | grep '^  ' | awk '{ if (match($0, /^  nagsly( [^ ]( ?[^ ])*)?  +/)) print RLENGTH; else if (match($0, /^ +/)) print RLENGTH }' | sort -u)"
+  [ "$(printf '%s\n' "$cols" | wc -l | tr -d ' ')" -eq 1 ]
+  [[ "$output" == *"nagsly plugins"* ]] || false
+}
+
+@test "subcommand -h and --help print usage instead of acting" {
+  local cmd
+  for cmd in add list rm clear status logs stop poll sync plugins; do
+    run "$BIN" "$cmd" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"nagsly add \"<title>\" <when>"* ]] || false
+    run "$BIN" "$cmd" -h
+    [ "$status" -eq 0 ]
+  done
+  [ ! -e "$NAGSLY_DIR/events.d/manual.json" ]
+}
+
+# Plugins on a PATH with no installed nagsly-* (only the tools nagsly needs).
+plugins_path() {
+  local tools="" t
+  for t in grdy jq super; do tools="$tools:$(dirname "$(command -v "$t")")"; done
+  printf '%s%s:/usr/bin:/bin' "$1" "$tools"
+}
+
+@test "plugins lists fetch, monitor and sync plugins by type with the path that runs" {
+  local first="$TEST_DIR/first" second="$TEST_DIR/second"
+  mkdir -p "$first" "$second"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$first/nagsly-sync-zeta"
+  for p in nagsly-sync-zeta nagsly-sync-alpha nagsly-fetch-cal nagsly-monitor-pr nagsly-monitor-off nagsly-other-x; do
+    cp "$first/nagsly-sync-zeta" "$second/$p"
+  done
+  chmod +x "$first"/* "$second"/*
+  chmod -x "$second/nagsly-monitor-off"
+  PATH="$(plugins_path "$first:$second")" run "$BIN" plugins
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 4 ]
+  [[ "${lines[0]}" =~ ^fetch\ +cal\ +$second/nagsly-fetch-cal$ ]] || false
+  [[ "${lines[1]}" =~ ^monitor\ +pr\ +$second/nagsly-monitor-pr$ ]] || false
+  [[ "${lines[2]}" =~ ^sync\ +alpha\ +$second/nagsly-sync-alpha$ ]] || false
+  [[ "${lines[3]}" =~ ^sync\ +zeta\ +$first/nagsly-sync-zeta$ ]] || false   # first on PATH wins
+  # grdy aligns the columns: every name starts at the same offset.
+  [ "$(printf '%s\n' "${lines[@]}" | awk '{ print index($0, $2) }' | sort -u | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "plugins skips an invalid plugin name even in the last PATH directory" {
+  local good="$TEST_DIR/good" last="$TEST_DIR/last"
+  mkdir -p "$good" "$last"
+  printf '#!/usr/bin/env bash\n' > "$good/nagsly-sync-ok"
+  cp "$good/nagsly-sync-ok" "$last/nagsly-sync-x.sh"   # '.' is not a valid name
+  chmod +x "$good/nagsly-sync-ok" "$last/nagsly-sync-x.sh"
+  PATH="$(plugins_path "$good"):$last" run "$BIN" plugins
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sync"*"ok"* ]] || false
+  [[ "$output" != *"x.sh"* ]] || false
+}
+
+@test "plugins says so when none are on PATH" {
+  PATH="$(plugins_path "$TEST_DIR")" run "$BIN" plugins
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no nagsly plugins found on PATH"* ]] || false
+}
+
+@test "add with an unquoted multi-word when explains the quoting" {
+  run "$BIN" add "schedule hvac" tomorrow 10:00
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'"tomorrow 10:00"'* ]] || false
+  [ ! -e "$NAGSLY_DIR/events.d/manual.json" ]
+}
+
+@test "add with missing arguments prints usage, not a bash parameter error" {
+  run "$BIN" add
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'nagsly add "<title>" <when>'* ]] || false
+  [[ "$output" != *"line "* ]] || false
+  run "$BIN" add "only a title"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'nagsly add "<title>" <when>'* ]] || false
+  [[ "$output" != *"line "* ]] || false
+}
+
 @test "monitor add forwards help to the PR and Gmail plugins" {
   PATH="$PWD/plugins:$PATH" run "$BIN" monitor add pr --help
   [ "$status" -eq 0 ]
