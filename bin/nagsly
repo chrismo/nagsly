@@ -919,7 +919,7 @@ sync_one() {
       waitpid($pid, 0);
       my $status = $?;
       exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
-    ' "$timeout" env NAGSLY_SYNC_FORCE="$force" "$plugin" || rc=$?
+    ' "$timeout" env NAGSLY_SYNC_FORCE="$force" "$plugin" </dev/null || rc=$?
     if (( rc == 124 )); then echo "nagsly sync: $name timed out after ${timeout}s" >&2; fi
   fi
   if (( rc == 0 )); then

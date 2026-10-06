@@ -355,6 +355,13 @@ To check whether the agent is loaded, use `launchctl print "gui/$(id -u)/<label>
 bootstrap session, so a script spawned outside the login session false-reports
 "not loaded". That cost a debug cycle.
 
+### Sync plugins must not inherit scheduler input
+
+The scheduler reads integration names from stdin. Each plugin gets
+`/dev/null` instead: `alerter --remove` reads non-terminal stdin as a message,
+even in remove mode. Inheriting the scheduler input made it send a bogus
+"gmail / script" notification and consume the remaining integrations.
+
 ### Why `gws` and not the secret `.ics` feed
 
 Google expands recurring meetings server-side, so the plugin needs no RRULE

@@ -668,6 +668,27 @@ EOF
   [ "$(wc -l < "$TEST_DIR/sync.calls" | tr -d ' ')" -eq 1 ]
 }
 
+@test "sync plugins get EOF instead of consuming later integration names" {
+  local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
+  cat > "$pdir/nagsly-sync-reader" <<'EOF'
+#!/usr/bin/env bash
+input="$(cat)"
+printf '%s' "$input" > "$NAGSLY_DIR/plugin-input"
+EOF
+  cat > "$pdir/nagsly-sync-later" <<'EOF'
+#!/usr/bin/env bash
+echo called >> "$NAGSLY_DIR/later.calls"
+EOF
+  chmod +x "$pdir/nagsly-sync-reader" "$pdir/nagsly-sync-later"
+  printf '{"sync_plugins":["reader","later"]}' > "$NAGSLY_DIR/config.json"
+  PATH="$pdir:$PATH" run "$BIN" sync
+  [ "$status" -eq 0 ]
+  [ -f "$NAGSLY_DIR/plugin-input" ]
+  [ ! -s "$NAGSLY_DIR/plugin-input" ]
+  [ "$(<"$NAGSLY_DIR/later.calls")" = called ]
+  [ "$(jq -r .last_error "$NAGSLY_DIR/state/sync-later.json")" = null ]
+}
+
 @test "sync supports hyphenated integration names" {
   local pdir="$TEST_DIR/plugins"; mkdir -p "$pdir"
   # Config keys support hyphens; they are quoted in the SuperDB field lookup.
