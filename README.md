@@ -444,11 +444,14 @@ source or your manual events.
 
 ### A possible language port (low priority)
 
-Keep Bash while maintenance stays comfortable. If scheduler and process-control
-complexity warrants a rewrite, Go is the pragmatic choice for the same CLI with
-less shell plumbing; Rust is also a good fit, with more implementation effort.
-Swift becomes attractive for native macOS integration, and could eliminate some 
-of the audio and notification tooling and not just be a CLI port;
-Python simplifies the code but adds runtime management. Any port should preserve
+Keep Bash while maintenance stays comfortable — there's no plan to port. If a
+rewrite ever earns its keep, **the preference is Rust**: one static binary, typed
+JSON/time handling (serde + jiff/chrono) in place of the `jq`/`super`/BSD-`date`
+plumbing, and no bash 3.2 workarounds. Port the core only; plugins are PATH
+executables and can stay Bash. The bats suite is black-box, so point `BIN` at the
+new binary and it becomes the conformance spec. Go would serve about as well;
+Swift becomes attractive only for native macOS integration (it could replace
+some of the audio and notification tooling, not just port the CLI); Python
+simplifies the code but adds runtime management. Any port should preserve
 the JSON/plugin contracts, separate alarm and sync jobs, and self-bounding audio
 loop — a new language does not fix launchd's constraints.

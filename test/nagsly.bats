@@ -478,6 +478,42 @@ EOF
   [[ "$output" == *"AudioQueueStart failed (-66681)"* ]] || false
 }
 
+@test "alarm without alerter keeps sounding until its timeout and logs the error" {
+  # No alerter means no Stop button, so killing the loop as soon as alerter
+  # "returns" would make the alarm a single blip. It must ring to the deadline.
+  local stub="$TEST_DIR/stub"; mkdir -p "$stub"
+  cat > "$stub/afplay" <<EOF
+#!/usr/bin/env bash
+echo play >> "$TEST_DIR/afplay.calls"
+sleep 0.1
+EOF
+  chmod +x "$stub/afplay"
+  seed_meeting 30
+  run env -u NAGSLY_DRY_FIRE PATH="$stub:$PATH" ALERTER=nagsly-test-no-alerter \
+    ALARM_TIMEOUT=2 ALARM_GAP=0 TOAST_ENABLED=0 "$BIN" poll
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TEST_DIR/afplay.calls" | tr -d ' ')" -ge 3 ]
+  grep -q "ERROR alerter not found" "$NAGSLY_DIR/nagsly.log"
+}
+
+@test "toast without alerter logs the error" {
+  seed_meeting 300
+  run env -u NAGSLY_DRY_FIRE ALERTER=nagsly-test-no-alerter ALARM_ENABLED=0 "$BIN" poll
+  [ "$status" -eq 0 ]
+  grep -q "ERROR alerter not found" "$NAGSLY_DIR/nagsly.log"
+}
+
+@test "status flags a missing alerter" {
+  ALERTER=nagsly-test-no-alerter run "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alerter: NOT FOUND"* ]] || false
+  local stub="$TEST_DIR/stub"; mkdir -p "$stub"
+  printf '#!/usr/bin/env bash\n' > "$stub/alerter"; chmod +x "$stub/alerter"
+  PATH="$stub:$PATH" run "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"NOT FOUND"* ]] || false
+}
+
 @test "alarm_gap spaces out the loop's repeats" {
   # Exercise the loop body directly rather than through `poll`: in `poll` the
   # stub alerter returns instantly, so do_fire kills the loop after one play and
@@ -744,7 +780,8 @@ EOF
   local child_pid
   child_pid="$(<"$TEST_DIR/child.pid")"
   sleep 0.2
-  ! kill -0 "$child_pid" 2>/dev/null
+  run kill -0 "$child_pid"
+  [ "$status" -ne 0 ]
   [ -f "$NAGSLY_DIR/state/sync-slow.json" ]
 }
 
@@ -1450,7 +1487,8 @@ EOF
 #!/usr/bin/env bash
 exit 1
 EOF
-  chmod +x "$pdir/gws" "$pdir/launchctl"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$pdir/alerter"   # host-independent: test the submit failure, not a missing alerter
+  chmod +x "$pdir/gws" "$pdir/launchctl" "$pdir/alerter"
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '{"id":"gmail-test","kind":"gmail","thread_id":"thread-1","title":"Mail","url":"https://mail.google.com/mail/u/0/#all/thread-1","status":"waiting","last_state":"waiting"}\n' > "$NAGSLY_DIR/monitors.d/gmail-test.json"
   NAGSLY_DRY_FIRE= GWS=gws PATH="$pdir:$PATH" run "$PWD/plugins/nagsly-monitor-gmail" --sync
@@ -1656,7 +1694,8 @@ EOF
 #!/usr/bin/env bash
 exit 1
 EOF
-  chmod +x "$pdir/gh" "$pdir/launchctl" "$pdir/nagsly-monitor-pr"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$pdir/alerter"   # host-independent: test the submit failure, not a missing alerter
+  chmod +x "$pdir/gh" "$pdir/launchctl" "$pdir/nagsly-monitor-pr" "$pdir/alerter"
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '%s\n' '{"id":"pr-deadbeef","kind":"pr","number":"123","title":"Ship","url":"https://github.com/acme/app/pull/123","status":"waiting","last_state":"waiting"}' > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
   printf '{"sync_plugins":["pr"]}' > "$NAGSLY_DIR/config.json"
@@ -1799,7 +1838,7 @@ script_register() {
   printf '{"sync_plugins":[]}' > "$NAGSLY_DIR/config.json"
   CHECK_RC=2 PATH="$PWD/plugins:$PATH" run "$BIN" sync
   [ "$status" -ne 0 ]
-  [[ "$output" == *diagnostic* ]]
+  [[ "$output" == *diagnostic* ]] || false
   [ "$(jq -r .last_exit "${SCRIPT_FILE[0]}")" = 2 ]
   CHECK_RC=2 NAGSLY_NOW=1784000060 PATH="$PWD/plugins:$PATH" run "$BIN" sync --due
   [ "$status" -ne 0 ]
@@ -1824,7 +1863,8 @@ script_register() {
   NAGSLY_SCRIPT_TIMEOUT=1 PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
   [ "$status" -ne 0 ]
   [ "$(jq -r .last_exit "${SCRIPT_FILE[0]}")" = 124 ]
-  ! kill -0 "$(<"$NAGSLY_DIR/child.pid")" 2>/dev/null
+  run kill -0 "$(<"$NAGSLY_DIR/child.pid")"
+  [ "$status" -ne 0 ]
   [ "$(jq -r 'select(.script | endswith("second.sh")) | .status' "$NAGSLY_DIR"/monitors.d/script-*.json)" = healthy ]
 }
 
@@ -1837,12 +1877,13 @@ script_register() {
   chmod +x "$pdir/launchctl" "$pdir/alerter"
   NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
   [ "$status" -eq 0 ]
-  [[ "$(<"$NOTIFY_ORDER_LOG")" == *'submit -l'*'--notify Token budgets'*$'Alice 96%\nBob 99%'* ]]
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *'submit -l'*'--notify Token budgets'*$'Alice 96%\nBob 99%'* ]] || false
   local id; id="$(jq -r .id "${SCRIPT_FILE[0]}")"
   NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --notify 'Token budgets' $'Alice 96%\nBob 99%' "nagsly-$id" "$pdir/alerter" test-label
   [ "$status" -eq 0 ]
-  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--group nagsly-$id"*'remove test-label'* ]]
-  ! grep -E -- '--sound|--timeout' "$NOTIFY_ORDER_LOG"
+  [[ "$(<"$NOTIFY_ORDER_LOG")" == *"--group nagsly-$id"*'remove test-label'* ]] || false
+  run grep -E -- '--sound|--timeout' "$NOTIFY_ORDER_LOG"
+  [ "$status" -eq 1 ]   # 1 = ran and found nothing; 2 (unreadable log) must not pass
   CHECK_RC=0 REMOVE_FAIL=1 NAGSLY_NOW=1784003600 NAGSLY_DRY_FIRE= PATH="$pdir:$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
   [ "$status" -ne 0 ]
   [ "$(jq -r .notification_pending "${SCRIPT_FILE[0]}")" = true ]
@@ -1865,7 +1906,7 @@ script_register() {
   mkdir "$NAGSLY_DIR/state/script.lock"
   PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
   [ "$status" -ne 0 ]
-  [[ "$output" == *'already running or stale lock'* ]]
+  [[ "$output" == *'already running or stale lock'* ]] || false
   [ "$(wc -l < "$SCRIPT_RUN_LOG" | tr -d ' ')" = 1 ]
 }
 

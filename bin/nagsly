@@ -658,6 +658,10 @@ do_fire() {
       # Backgrounded + disowned so the (now-blocking) alerter never holds the
       # poll; it exits when dismissed. (A per-toast sticky/timeout config knob
       # may come later; sticky is the default for now.)
+      if ! command -v "$ALERTER" >/dev/null 2>&1; then
+        log "ERROR alerter not found ($ALERTER) — toast for '$title' not shown"
+        return 0
+      fi
       ( "$ALERTER" --title "⏰ nagsly live" --subtitle "$title" \
           --message "Coming up at ${hhmm}" >/dev/null 2>&1 || true ) &
       disown 2>/dev/null || true
@@ -697,6 +701,12 @@ do_fire() {
       # can't suppress this — the notice comes from the shell's job reaper, not
       # from kill. disown does NOT detach the process; the loop still dies here.
       disown "$loop_pid" 2>/dev/null || true
+      # A missing alerter returns instantly; don't mistake that for Stop.
+      if ! command -v "$ALERTER" >/dev/null 2>&1; then
+        log "ERROR alerter not found ($ALERTER) — alarm for '$title' has no Stop button; use nagsly stop"
+        while kill -0 "$loop_pid" 2>/dev/null; do sleep 1; done
+        return 0
+      fi
       # alerter blocks until Stop / close / timeout — that's the intended nag.
       # On Stop/close we kill the loop early; otherwise the loop self-stops at
       # its deadline. Give alerter the same timeout so it doesn't outlast sound.
@@ -802,7 +812,11 @@ cmd_stop() {
 sync_every() {
   local name="$1" value
   [[ "$name" != script ]] || { printf '60'; return 0; }
-  value="$(super -dynamic -f line -c "coalesce(sync_every[\"$name\"], 900)" "$CONFIG_FILE" 2>/dev/null)" || return 1
+  if [[ -f "$CONFIG_FILE" ]]; then
+    value="$(super -dynamic -f line -c "coalesce(sync_every[\"$name\"], 900)" "$CONFIG_FILE")" || return 1
+  else
+    value=900
+  fi
   [[ "$value" =~ ^[0-9]{1,8}$ ]] || return 1
   value=$((10#$value))
   (( value >= 60 )) || return 1
@@ -1002,6 +1016,8 @@ cmd_status() {
     sync_loaded="NOT loaded — run ./install.sh"
   fi
   echo "  sync:   $sync_loaded"
+  command -v "${ALERTER:-alerter}" >/dev/null 2>&1 ||
+    echo "  alerter: NOT FOUND — toasts and the alarm's Stop button won't appear (brew install alerter)"
   shopt -s nullglob
   local sync_states=("$STATE_DIR"/sync-*.json)
   shopt -u nullglob
