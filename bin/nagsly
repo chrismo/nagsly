@@ -1017,7 +1017,7 @@ cmd_status() {
   fi
   echo "  sync:   $sync_loaded"
   command -v "${ALERTER:-alerter}" >/dev/null 2>&1 ||
-    echo "  alerter: NOT FOUND — toasts and the alarm's Stop button won't appear (brew install alerter)"
+    echo "  alerter: NOT FOUND — toasts and the alarm's Stop button won't appear (install from github.com/vjeantet/alerter/releases)"
   shopt -s nullglob
   local sync_states=("$STATE_DIR"/sync-*.json)
   shopt -u nullglob
