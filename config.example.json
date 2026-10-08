@@ -16,6 +16,13 @@
 
   "_sync": "Integrations checked by the separate sync LaunchAgent. Cadences are seconds; minimum 60. Calendar refresh defaults to every 15 minutes.",
   "sync_plugins": ["gws", "pr", "gmail"],
+  "_pr": "Auto-discover my open PRs in these orgs and/or owner/repo names. Empty lists disable discovery. All PRs expire after activity_window_days of inactivity; merged/closed PRs expire after terminal_retention_hours.",
+  "pr": {
+    "orgs": [],
+    "repos": [],
+    "activity_window_days": 30,
+    "terminal_retention_hours": 24
+  },
   "sync_every": {
     "gws": 900,
     "pr": 120,

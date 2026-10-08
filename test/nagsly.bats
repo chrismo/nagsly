@@ -961,7 +961,7 @@ plugins_path() {
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 $2 $3" == "pr view 123" ]]; then
-  printf '{"number":123,"title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}\n'
+  printf '{"number":123,"title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}\n'
 elif [[ "$1 $2" == "pr checks" ]]; then
   printf '[{"bucket":"pass"}]\n'
 else
@@ -982,7 +982,7 @@ EOF
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 $2 $3" == "pr view --json" ]]; then
-  printf '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123"}\n'
+  printf '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123","state":"OPEN","updatedAt":"2026-07-14T03:33:20Z"}\n'
 else exit 2; fi
 EOF
   chmod +x "$pdir/gh"
@@ -999,7 +999,7 @@ printf '%s\n' "$*" >> "$NAGSLY_DIR/gh.args"
 case "$1 $2 $3" in
   'pr view feature') exit 1 ;;
   'pr list --state') printf '%s\n' '[{"number":123,"headRefName":"feature/ship-nagsly","title":"Ship","url":"https://github.com/acme/app/pull/123"},{"number":124,"headRefName":"another","title":"Other","url":"https://github.com/acme/app/pull/124"}]' ;;
-  'pr view 123') printf '%s\n' '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123"}' ;;
+  'pr view 123') printf '%s\n' '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123","state":"OPEN","updatedAt":"2026-07-14T03:33:20Z"}' ;;
   *) exit 2 ;;
 esac
 EOF
@@ -1285,16 +1285,17 @@ EOF
   [ "$(<"$TEST_DIR/target")" = keep ]
 }
 
-@test "monitor list displays registered monitors and rm removes by id" {
+@test "monitor list displays registered PR monitors and rm persists ignore by id" {
   mkdir -p "$NAGSLY_DIR/monitors.d"
   printf '{"id":"pr-deadbeef","kind":"pr","title":"Ship nagsly","status":"waiting","url":"https://github.com/acme/app/pull/123"}\n' \
     > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
   run "$BIN" monitor list
   [ "$status" -eq 0 ]
   [[ "$output" == *"pr-deadbeef"*"pr"*"waiting"*"Ship nagsly"* ]] || false
-  run "$BIN" monitor rm pr-deadbeef
+  PATH="$BATS_TEST_DIRNAME/../plugins:$PATH" run "$BIN" monitor rm pr-deadbeef
   [ "$status" -eq 0 ]
   [ ! -f "$NAGSLY_DIR/monitors.d/pr-deadbeef.json" ]
+  [ -f "$NAGSLY_DIR/state/pr-ignored/pr-deadbeef.json" ]
 }
 
 @test "PR and Gmail sync succeed when no monitors are registered" {
@@ -1315,7 +1316,7 @@ EOF
 printf '%s\n' "$*" >> "$NAGSLY_DIR/gh.args"
 case "$1 $2 $3" in
   'pr view https://github.com/acme/app/pull/1') exit 1 ;;
-  'pr view https://github.com/acme/other/pull/2') printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n' ;;
+  'pr view https://github.com/acme/other/pull/2') printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}\n' ;;
   'pr checks https://github.com/acme/other/pull/2') printf '[]\n' ;;
   *) exit 2 ;;
 esac
@@ -1525,7 +1526,8 @@ EOF
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "pr view" ]]; then
-  printf '{"number":123,"title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","state":"MERGED","reviewDecision":"APPROVED","isDraft":false}\n'
+  printf '%s\n' "$*" >> "$NAGSLY_DIR/gh.args"
+  printf '{"number":123,"title":"Ship nagsly","url":"https://github.com/acme/app/pull/123","state":"MERGED","reviewDecision":"APPROVED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z","mergedAt":"2026-07-14T03:33:20Z","closedAt":"2026-07-14T03:33:20Z"}\n'
 elif [[ "$1 $2" == "pr checks" ]]; then
   printf '[]\n'
 else exit 2; fi
@@ -1540,13 +1542,16 @@ EOF
     > "$NAGSLY_DIR/monitors.d/pr-deadbeef.json"
   printf '{"sync_plugins":["pr"],"sync_every":{"pr":120}}' > "$NAGSLY_DIR/config.json"
   export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/notifies"
-  NAGSLY_NOW=1784000000 PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync --due
+  export NAGSLY_NOW=1784000000
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync --due
   [ "$status" -eq 0 ]
   [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
-  NAGSLY_NOW=1784000120 PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync --due
+  export NAGSLY_NOW=1784000120
+  PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" sync --due
   [ "$status" -eq 0 ]
   [ "$(wc -l < "$TEST_DIR/notifies" | tr -d ' ')" -eq 1 ]
   [ "$(super -dynamic -f line -c 'values status' "$NAGSLY_DIR/monitors.d/pr-deadbeef.json")" = "merged" ]
+  [ "$(grep -c '^pr view ' "$NAGSLY_DIR/gh.args")" -eq 2 ]
 }
 
 @test "PR sync does not commit a state transition when gh checks fail unexpectedly" {
@@ -1554,7 +1559,7 @@ EOF
   cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n'
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}\n'
 else exit 1; fi
 EOF
   chmod +x "$pdir/gh" "$pdir/nagsly-monitor-pr"
@@ -1570,7 +1575,7 @@ EOF
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n'
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}\n'
 else printf '{"bucket":"pass"}\n'; fi
 EOF
   chmod +x "$pdir/gh"
@@ -1587,7 +1592,7 @@ EOF
   cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false}\n'
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"APPROVED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}\n'
 else printf '[]\n'; fi
 EOF
   cat > "$pdir/launchctl" <<'EOF'
@@ -1622,7 +1627,7 @@ EOF
   cat > "$pdir/alerter" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$NOTIFY_ORDER_LOG"
-printf 'Open PR\n'
+printf '@CLOSED\n'
 EOF
   cat > "$pdir/afplay" <<'EOF'
 #!/usr/bin/env bash
@@ -1648,7 +1653,7 @@ EOF
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$2" == view ]]; then
-  printf '{"state":"OPEN","reviewDecision":"%s","isDraft":%s}\n' "$REVIEW_DECISION" "$IS_DRAFT"
+  printf '{"state":"OPEN","reviewDecision":"%s","isDraft":%s,"updatedAt":"2026-07-14T03:33:20Z"}\n' "$REVIEW_DECISION" "$IS_DRAFT"
 else printf '[]\n'; fi
 EOF
   cat > "$pdir/launchctl" <<'EOF'
@@ -1686,7 +1691,7 @@ EOF
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}\n'
+if [[ "$2" == view ]]; then printf '{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}\n'
 else printf '[]\n'; fi
 EOF
   cat > "$pdir/alerter" <<'EOF'
@@ -1708,7 +1713,7 @@ EOF
   cp "$PWD/plugins/nagsly-monitor-pr" "$pdir/nagsly-monitor-pr"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$2" == view ]]; then printf '{"state":"MERGED","reviewDecision":"APPROVED","isDraft":false}\n'
+if [[ "$2" == view ]]; then printf '{"state":"MERGED","reviewDecision":"APPROVED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z","mergedAt":"2026-07-14T03:33:20Z","closedAt":"2026-07-14T03:33:20Z"}\n'
 else printf '[]\n'; fi
 EOF
   cat > "$pdir/launchctl" <<'EOF'
@@ -1730,7 +1735,7 @@ EOF
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-printf '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123","state":"MERGED"}\n'
+printf '{"number":123,"title":"Ship","url":"https://github.com/acme/app/pull/123","state":"MERGED","updatedAt":"2026-07-14T03:33:20Z","mergedAt":"2026-07-14T03:33:20Z","closedAt":"2026-07-14T03:33:20Z"}\n'
 EOF
   chmod +x "$pdir/gh"
   local id="pr-$(printf '%s' 'https://github.com/acme/app/pull/123' | shasum -a 256 | cut -c1-12)"
@@ -1745,7 +1750,7 @@ EOF
   local pdir="$TEST_DIR/stubs"; mkdir -p "$pdir"
   cat > "$pdir/gh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"number":123,"title":"Ship \"it\"","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false}'
+printf '%s\n' '{"number":123,"title":"Ship \"it\"","url":"https://github.com/acme/app/pull/123","state":"OPEN","reviewDecision":"REVIEW_REQUIRED","isDraft":false,"updatedAt":"2026-07-14T03:33:20Z"}'
 EOF
   chmod +x "$pdir/gh"
   PATH="$pdir:$PWD/plugins:$PATH" run "$BIN" monitor add pr 123
@@ -1958,6 +1963,579 @@ script_register() {
   NAGSLY_NOW=1784003600 PATH="$PWD/plugins:$PATH" run "$PWD/plugins/nagsly-monitor-script" --sync
   [ "$status" -ne 0 ]
   [ "$(jq -r .status "${SCRIPT_FILE[0]}")" = error ]
+}
+
+pr_proactive_setup() {
+  export PR_STUB_DIR="$TEST_DIR/pr-stubs"
+  mkdir -p "$PR_STUB_DIR" "$NAGSLY_DIR/pr-fixtures"
+  export PR_PLUGIN="$BATS_TEST_DIRNAME/../plugins/nagsly-monitor-pr"
+  export PATH="$PR_STUB_DIR:$BATS_TEST_DIRNAME/../plugins:$PATH"
+  export PR_URL='https://github.com/acme/app/pull/123'
+  PR_ID="pr-$(printf '%s' "$PR_URL" | shasum -a 256 | cut -c1-12)"
+  PR_FILE="$NAGSLY_DIR/monitors.d/$PR_ID.json"
+  PR_IGNORE="$NAGSLY_DIR/state/pr-ignored/$PR_ID.json"
+  export NAGSLY_TEST_NOTIFY_LOG="$TEST_DIR/pr-notifications"
+  printf '{"pr":{"orgs":["acme"],"repos":[],"activity_window_days":30,"terminal_retention_hours":24}}\n' > "$NAGSLY_DIR/config.json"
+  cat > "$PR_STUB_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+jq -cn --args '$ARGS.positional' -- "$@" >> "$NAGSLY_DIR/gh.calls"
+case "$1 $2" in
+  'api user')
+    [[ ! -e "$NAGSLY_DIR/pr-fixtures/auth-fail" ]] || exit 1
+    printf 'test-author\n' ;;
+  'api --method')
+    [[ "$*" == *'GET --paginate --slurp search/issues'* && "$*" == *'per_page=100'* ]] || exit 2
+    [[ ! -e "$NAGSLY_DIR/pr-fixtures/search-fail" ]] || exit 1
+    response="$NAGSLY_DIR/pr-fixtures/search.json"
+    if [[ "$*" == *'repo:'* && -f "$NAGSLY_DIR/pr-fixtures/repo-search.json" ]]; then
+      response="$NAGSLY_DIR/pr-fixtures/repo-search.json"
+    fi
+    cat "$response" ;;
+  'pr view')
+    [[ ! -e "$NAGSLY_DIR/pr-fixtures/view-fail" ]] || exit 1
+    ref="$3"
+    if [[ "$ref" == https://github.com/*/pull/* ]]; then
+      jq --arg url "$ref" --argjson number "${ref##*/}" '.url=$url | .number=$number' "$NAGSLY_DIR/pr-fixtures/view.json"
+    else
+      cat "$NAGSLY_DIR/pr-fixtures/view.json"
+    fi ;;
+  'pr checks') cat "$NAGSLY_DIR/pr-fixtures/checks.json" ;;
+  *) echo "unexpected gh: $*" >&2; exit 2 ;;
+esac
+EOF
+  cat > "$PR_STUB_DIR/alerter" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NAGSLY_DIR/notification.calls"
+[[ "$1" == --remove ]] || exit 2
+exit "${PR_CLEAR_FAIL:-0}"
+EOF
+  cat > "$PR_STUB_DIR/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NAGSLY_DIR/launchctl.calls"
+exit 0
+EOF
+  cat > "$PR_STUB_DIR/afplay" <<'EOF'
+#!/usr/bin/env bash
+printf 'unexpected audio\n' >> "$NAGSLY_DIR/audio.calls"
+exit 1
+EOF
+  chmod +x "$PR_STUB_DIR"/*
+  printf '[]\n' > "$NAGSLY_DIR/pr-fixtures/checks.json"
+  pr_snapshot OPEN 1784000000 REVIEW_REQUIRED false
+  pr_search
+}
+
+pr_snapshot() {
+  local state="$1" updated="$2" review="${3:-REVIEW_REQUIRED}" draft="${4:-false}" terminal="${5:-$2}"
+  jq -n --arg state "$state" --argjson updated "$updated" --arg review "$review" \
+    --argjson draft "$draft" --argjson terminal "$terminal" --arg url "$PR_URL" '
+    {number:123,title:"Ship",url:$url,state:$state,reviewDecision:$review,isDraft:$draft,
+     updatedAt:($updated|todateiso8601),
+     mergedAt:(if $state == "MERGED" then $terminal|todateiso8601 else null end),
+     closedAt:(if $state == "CLOSED" or $state == "MERGED" then $terminal|todateiso8601 else null end)}
+  ' > "$NAGSLY_DIR/pr-fixtures/view.json"
+}
+
+pr_search() {
+  jq -n --arg url "$PR_URL" --argjson updated "${1:-1784000000}" '
+    [{total_count:1,incomplete_results:false,items:[
+      {number:123,title:"Ship",html_url:$url,updated_at:($updated|todateiso8601)}]}]
+  ' > "$NAGSLY_DIR/pr-fixtures/search.json"
+}
+
+pr_seed_monitor() {
+  mkdir -p "$NAGSLY_DIR/monitors.d"
+  jq -n --arg id "$PR_ID" --arg url "$PR_URL" --arg state "${1:-waiting}" '
+    {id:$id,kind:"pr",number:"123",title:"Ship",url:$url,status:$state,last_state:$state,
+     updatedAt:"2020-01-01T00:00:00Z"}
+  ' > "$PR_FILE"
+}
+
+pr_sync() {
+  run "$PR_PLUGIN" --sync
+}
+
+@test "proactive PR validates config before any GitHub query" {
+  pr_proactive_setup
+  local bad
+  for bad in 'null' '[]' '{"orgs":"acme"}' '{"repos":["app"]}' \
+    '{"orgs":["acme is:closed"]}' '{"repos":["acme/app extra"]}' \
+    '{"activity_window_days":0}' '{"activity_window_days":1.5}' \
+    '{"activity_window_days":"30"}' '{"terminal_retention_hours":0}' \
+    '{"terminal_retention_hours":1.5}' '{"terminal_retention_hours":"24"}'; do
+    printf '{"pr":%s}\n' "$bad" > "$NAGSLY_DIR/config.json"
+    pr_sync
+    [ "$status" -ne 0 ]
+    [ ! -e "$NAGSLY_DIR/gh.calls" ]
+    [ ! -e "$PR_FILE" ]
+  done
+}
+
+@test "proactive PR empty default scope does not authenticate or search" {
+  pr_proactive_setup
+  rm "$NAGSLY_DIR/config.json"
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$NAGSLY_DIR/gh.calls" ]
+  printf '{"pr":{"orgs":[],"repos":[]}}' > "$NAGSLY_DIR/config.json"
+  pr_seed_monitor
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -s '[.[] | select(.[0] == "api")] | length' "$NAGSLY_DIR/gh.calls")" -eq 0 ]
+  [ "$(jq -s '[.[] | select(.[0:2] == ["pr","view"])] | length' "$NAGSLY_DIR/gh.calls")" -eq 1 ]
+}
+
+@test "proactive PR org repo union paginates deduplicates URLs and preserves history" {
+  pr_proactive_setup
+  printf '{"pr":{"orgs":["acme"],"repos":["acme/app"]}}' > "$NAGSLY_DIR/config.json"
+  jq '.[0].total_count=2 | . + [.[0]] | .[1].items[0].number=124 | .[1].items[0].html_url="https://github.com/acme/app/pull/124"' \
+    "$NAGSLY_DIR/pr-fixtures/search.json" > "$NAGSLY_DIR/pr-fixtures/repo-search.json"
+  pr_seed_monitor approved
+  jq '. + {history_marker:"keep"}' "$PR_FILE" > "$TEST_DIR/record"
+  mv "$TEST_DIR/record" "$PR_FILE"
+  pr_snapshot OPEN 1784000000 APPROVED
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(find "$NAGSLY_DIR/monitors.d" -name 'pr-*.json' | wc -l | tr -d ' ')" -eq 2 ]
+  [ "$(jq -r .history_marker "$PR_FILE")" = keep ]
+  [ "$(wc -l < "$NAGSLY_TEST_NOTIFY_LOG" | tr -d ' ')" -eq 1 ]
+  jq -es 'any(.[]; . == ["api","user","--jq",".login"]) and
+    any(.[]; index("q=is:pr is:open author:test-author updated:>=2026-06-14T03:33:20Z org:acme")) and
+    any(.[]; index("q=is:pr is:open author:test-author updated:>=2026-06-14T03:33:20Z repo:acme/app"))' "$NAGSLY_DIR/gh.calls"
+}
+
+@test "proactive PR discovers recent actionable state and notifies exactly once" {
+  pr_proactive_setup
+  pr_snapshot OPEN 1784000000 APPROVED
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "$PR_FILE")" = approved ]
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = approved ]
+  jq -es 'all(.[] | select(.[0:2] == ["pr","view"]); .[3:] == ["--json","number,title,url,state,reviewDecision,isDraft,updatedAt,mergedAt,closedAt"])' "$NAGSLY_DIR/gh.calls"
+  [ ! -e "$NAGSLY_DIR/audio.calls" ]
+}
+
+@test "proactive PR draft and waiting discovery do not submit notifications" {
+  pr_proactive_setup
+  unset NAGSLY_TEST_NOTIFY_LOG
+  pr_snapshot OPEN 1784000000 APPROVED true
+  NAGSLY_DRY_FIRE= pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "$PR_FILE")" = draft ]
+  [ ! -e "$NAGSLY_DIR/launchctl.calls" ]
+  pr_snapshot OPEN 1784000000 REVIEW_REQUIRED false
+  NAGSLY_DRY_FIRE= pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "$PR_FILE")" = waiting ]
+  [ ! -e "$NAGSLY_DIR/launchctl.calls" ]
+}
+
+@test "proactive PR manual out of scope monitors age out from fresh activity and clear toast" {
+  pr_proactive_setup
+  printf '{"pr":{"orgs":[],"repos":[]}}' > "$NAGSLY_DIR/config.json"
+  pr_seed_monitor approved
+  pr_snapshot OPEN $((1784000000 - 30*86400 - 1)) APPROVED
+  NAGSLY_DRY_FIRE= pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_FILE" ]
+  grep -q -- "--remove nagsly-pr-$PR_ID" "$NAGSLY_DIR/notification.calls"
+  pr_snapshot OPEN 1784000000 APPROVED
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_FILE" ]
+  run "$PR_PLUGIN" --register "$PR_URL"
+  [ "$status" -eq 0 ]
+  [ -f "$PR_FILE" ]
+}
+
+@test "proactive PR fresh activity keeps old cached and missing search monitors alive" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  printf '[{"total_count":0,"incomplete_results":false,"items":[]}]' > "$NAGSLY_DIR/pr-fixtures/search.json"
+  pr_snapshot OPEN $((1784000000 - 30*86400)) APPROVED
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ -f "$PR_FILE" ]
+  [ "$(jq -r .status "$PR_FILE")" = approved ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+}
+
+@test "proactive PR expired automatic monitor returns on recent activity as fresh monitoring" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  pr_search $((1784000000 - 30*86400 - 1))
+  pr_snapshot OPEN $((1784000000 - 30*86400 - 1)) APPROVED
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_FILE" ]
+  pr_search
+  pr_snapshot OPEN 1784000000 APPROVED
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .status "$PR_FILE")" = approved ]
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = approved ]
+}
+
+@test "proactive PR merged and closed retain 24h from actual terminal time not inactivity" {
+  pr_proactive_setup
+  local state terminal
+  printf '{"pr":{"orgs":[],"repos":[]}}' > "$NAGSLY_DIR/config.json"
+  for state in MERGED CLOSED; do
+    export NAGSLY_NOW=1784000000
+    terminal=$((NAGSLY_NOW - 86400 + 1))
+    pr_seed_monitor
+    pr_snapshot "$state" $((NAGSLY_NOW - 40*86400)) APPROVED false "$terminal"
+    pr_sync
+    [ "$status" -eq 0 ]
+    [ "$(jq -r .status "$PR_FILE")" = "$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')" ]
+    pr_sync
+    [ "$status" -eq 0 ]
+    export NAGSLY_NOW=1784000001
+    NAGSLY_DRY_FIRE= pr_sync
+    [ "$status" -eq 0 ]
+    [ ! -e "$PR_FILE" ]
+    pr_sync
+    [ "$status" -eq 0 ]
+  done
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = $'merged\nclosed' ]
+  [ "$(grep -c -- "--remove nagsly-pr-$PR_ID" "$NAGSLY_DIR/notification.calls")" -eq 2 ]
+  [ "$(jq -s '[.[] | select(.[0:2] == ["pr","view"])] | length' "$NAGSLY_DIR/gh.calls")" -eq 6 ]
+}
+
+@test "proactive PR configurable activity and terminal windows govern fresh snapshots" {
+  pr_proactive_setup
+  printf '{"pr":{"activity_window_days":2,"terminal_retention_hours":2}}' > "$NAGSLY_DIR/config.json"
+  pr_seed_monitor
+  pr_snapshot OPEN $((1784000000 - 2*86400 - 1))
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_FILE" ]
+  pr_seed_monitor
+  pr_snapshot MERGED 1784000000 APPROVED false $((1784000000 - 7200))
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_FILE" ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+}
+
+@test "proactive PR ignore and rm suppress rediscovery until explicit unignore" {
+  pr_proactive_setup
+  local command
+  for command in ignore rm; do
+    pr_seed_monitor approved
+    NAGSLY_DRY_FIRE= run "$BIN" monitor "$command" "$PR_ID"
+    [ "$status" -eq 0 ]
+    [ ! -e "$PR_FILE" ]
+    [ -f "$PR_IGNORE" ]
+    [ "$(jq -r .url "$PR_IGNORE")" = "$PR_URL" ]
+    pr_snapshot OPEN 1784000000 APPROVED
+    pr_sync
+    [ "$status" -eq 0 ]
+    [ ! -e "$PR_FILE" ]
+    [ -f "$PR_IGNORE" ]
+    run "$BIN" monitor list
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"$PR_ID"* ]] || false
+    run "$BIN" monitor unignore "$PR_ID"
+    [ "$status" -eq 0 ]
+    [ ! -e "$PR_IGNORE" ]
+    pr_sync
+    [ "$status" -eq 0 ]
+    [ -f "$PR_FILE" ]
+  done
+  [ "$(grep -c -- "--remove nagsly-pr-$PR_ID" "$NAGSLY_DIR/notification.calls")" -eq 2 ]
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = $'approved\napproved' ]
+}
+
+@test "proactive PR manual registration overrides ignore without notifying" {
+  pr_proactive_setup
+  pr_seed_monitor
+  run "$BIN" monitor ignore "$PR_ID"
+  [ "$status" -eq 0 ]
+  run "$PR_PLUGIN" --register "$PR_URL"
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_IGNORE" ]
+  [ -f "$PR_FILE" ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+}
+
+@test "proactive PR ignore expiration uses fresh activity and survives API failure" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  run "$BIN" monitor ignore "$PR_ID"
+  [ "$status" -eq 0 ]
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ -f "$PR_IGNORE" ]
+  touch "$NAGSLY_DIR/pr-fixtures/view-fail"
+  export NAGSLY_NOW=$((1784000000 + 31*86400))
+  pr_sync
+  [ "$status" -ne 0 ]
+  [ -f "$PR_IGNORE" ]
+  [ ! -e "$PR_FILE" ]
+  rm "$NAGSLY_DIR/pr-fixtures/view-fail"
+  printf '[{"total_count":0,"incomplete_results":false,"items":[]}]' > "$NAGSLY_DIR/pr-fixtures/search.json"
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_IGNORE" ]
+  [ ! -e "$PR_FILE" ]
+  pr_snapshot OPEN "$NAGSLY_NOW" APPROVED
+  pr_search "$NAGSLY_NOW"
+  pr_sync
+  [ "$status" -eq 0 ]
+  [ -f "$PR_FILE" ]
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = approved ]
+}
+
+@test "proactive PR discovery failures still check existing monitors without removing them" {
+  pr_proactive_setup
+  pr_seed_monitor
+  pr_snapshot OPEN 1784000000 APPROVED
+  local failure
+  for failure in auth-fail search-fail; do
+    touch "$NAGSLY_DIR/pr-fixtures/$failure"
+    pr_sync
+    [ "$status" -ne 0 ]
+    [ "$(jq -r .status "$PR_FILE")" = approved ]
+    rm "$NAGSLY_DIR/pr-fixtures/$failure"
+  done
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = approved ]
+  [ "$(jq -s '[.[] | select(.[0:2] == ["pr","view"])] | length' "$NAGSLY_DIR/gh.calls")" -eq 2 ]
+}
+
+@test "proactive PR rejects incomplete truncated inconsistent and malformed discovery atomically" {
+  pr_proactive_setup
+  local bad
+  for bad in '[]' '{}' 'not json' \
+    '[{"total_count":-1,"incomplete_results":false,"items":[]}]' \
+    '[{"total_count":0.5,"incomplete_results":false,"items":[]}]' \
+    '[{"total_count":0,"items":[]}]' \
+    '[{"total_count":1,"incomplete_results":true,"items":[]}]' \
+    '[{"total_count":1001,"incomplete_results":false,"items":[]}]' \
+    '[{"total_count":1,"incomplete_results":false,"items":[]}]' \
+    '[{"total_count":0,"incomplete_results":false,"items":[]},{"total_count":1,"incomplete_results":false,"items":[]}]' \
+    '[{"total_count":1,"incomplete_results":false,"items":[{"number":123,"title":"Ship","html_url":"https://github.com/acme/app/pull/123","updated_at":"bad"}]}]'; do
+    printf '%s\n' "$bad" > "$NAGSLY_DIR/pr-fixtures/search.json"
+    pr_sync
+    [ "$status" -ne 0 ]
+    [ ! -e "$PR_FILE" ]
+    [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+  done
+}
+
+@test "proactive PR later scope failure commits no earlier scope discovery" {
+  pr_proactive_setup
+  printf '{"pr":{"orgs":["acme"],"repos":["acme/app"]}}' > "$NAGSLY_DIR/config.json"
+  printf '[{"total_count":1,"incomplete_results":true,"items":[]}]' > "$NAGSLY_DIR/pr-fixtures/repo-search.json"
+  pr_sync
+  [ "$status" -ne 0 ]
+  [ ! -e "$PR_FILE" ]
+}
+
+@test "proactive PR malformed lifecycle snapshots preserve monitor and ignore byte for byte" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  local original bad
+  original="$(<"$PR_FILE")"
+  local ignored="$NAGSLY_DIR/state/pr-ignored/pr-other.json"
+  mkdir -p "$(dirname "$ignored")"
+  printf '%s\n' "$original" > "$ignored"
+  for bad in '{}' 'null' 'not json' \
+    '{"state":"UNKNOWN","updatedAt":"2026-07-14T03:33:20Z"}' \
+    '{"state":"OPEN","updatedAt":"bad"}' \
+    '{"state":"OPEN"}' \
+    '{"state":"MERGED","updatedAt":"2026-07-14T03:33:20Z","mergedAt":null}' \
+    '{"state":"CLOSED","updatedAt":"2026-07-14T03:33:20Z","closedAt":"bad"}'; do
+    printf '%s\n' "$bad" > "$NAGSLY_DIR/pr-fixtures/view.json"
+    pr_sync
+    [ "$status" -ne 0 ]
+    [ "$(<"$PR_FILE")" = "$original" ]
+    [ "$(<"$ignored")" = "$original" ]
+    [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+  done
+}
+
+@test "proactive PR failed fresh view never expires stale cached monitor" {
+  pr_proactive_setup
+  pr_seed_monitor merged
+  local original="$(<"$PR_FILE")"
+  touch "$NAGSLY_DIR/pr-fixtures/view-fail"
+  export NAGSLY_NOW=$((1784000000 + 40*86400))
+  pr_sync
+  [ "$status" -ne 0 ]
+  [ "$(<"$PR_FILE")" = "$original" ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+}
+
+@test "proactive PR failed notification clears preserve expiration and ignore records for retry" {
+  pr_proactive_setup
+  unset NAGSLY_TEST_NOTIFY_LOG
+  printf '{"pr":{"orgs":[],"repos":[]}}' > "$NAGSLY_DIR/config.json"
+  pr_seed_monitor approved
+  local original="$(<"$PR_FILE")"
+  pr_snapshot OPEN $((1784000000 - 31*86400)) APPROVED
+  PR_CLEAR_FAIL=1 NAGSLY_DRY_FIRE= pr_sync
+  [ "$status" -ne 0 ]
+  [ "$(<"$PR_FILE")" = "$original" ]
+  pr_snapshot MERGED 1784000000 APPROVED false $((1784000000 - 86400))
+  PR_CLEAR_FAIL=1 NAGSLY_DRY_FIRE= pr_sync
+  [ "$status" -ne 0 ]
+  [ "$(<"$PR_FILE")" = "$original" ]
+  PR_CLEAR_FAIL=1 NAGSLY_DRY_FIRE= run "$BIN" monitor ignore "$PR_ID"
+  [ "$status" -ne 0 ]
+  [ "$(<"$PR_FILE")" = "$original" ]
+  [ ! -e "$PR_IGNORE" ]
+  NAGSLY_DRY_FIRE= pr_sync
+  [ "$status" -eq 0 ]
+  [ ! -e "$PR_FILE" ]
+  [ "$(grep -c -- "--remove nagsly-pr-$PR_ID" "$NAGSLY_DIR/notification.calls")" -eq 4 ]
+}
+
+@test "proactive PR shared lock rejects register sync ignore unignore and rm without changing records" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  mkdir -p "$(dirname "$PR_IGNORE")" "$NAGSLY_DIR/state/pr.lock"
+  cp "$PR_FILE" "$PR_IGNORE"
+  cp "$PR_FILE" "$TEST_DIR/original"
+  local operation
+  for operation in --register --sync --ignore --unignore; do
+    local argument="$PR_ID"
+    [[ "$operation" != --register ]] || argument="$PR_URL"
+    run "$PR_PLUGIN" "$operation" "$argument"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'PR operation already running'* ]] || false
+    cmp "$TEST_DIR/original" "$PR_FILE"
+    cmp "$TEST_DIR/original" "$PR_IGNORE"
+    [ -d "$NAGSLY_DIR/state/pr.lock" ]
+  done
+  run "$BIN" monitor rm "$PR_ID"
+  [ "$status" -ne 0 ]
+  cmp "$TEST_DIR/original" "$PR_FILE"
+  cmp "$TEST_DIR/original" "$PR_IGNORE"
+  [ ! -e "$NAGSLY_DIR/gh.calls" ]
+  [ ! -e "$NAGSLY_DIR/notification.calls" ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+}
+
+@test "proactive PR notification cleanup never consumes piped stdin" {
+  pr_proactive_setup
+  unset NAGSLY_TEST_NOTIFY_LOG
+  printf '{"pr":{"orgs":[],"repos":[]}}' > "$NAGSLY_DIR/config.json"
+  cat > "$PR_STUB_DIR/alerter" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == --remove ]] || exit 2
+printf '%s\n' "$*" >> "$NAGSLY_DIR/notification.calls"
+if IFS= read -r input; then
+  printf '%s\n' "$input" >> "$NAGSLY_DIR/consumed-input"
+  exit 1
+fi
+EOF
+  local cleanup
+  for cleanup in transition expiration ignore; do
+    pr_seed_monitor approved
+    pr_snapshot OPEN "$NAGSLY_NOW" REVIEW_REQUIRED
+    local operation=--sync
+    if [[ "$cleanup" == expiration ]]; then
+      pr_snapshot OPEN $((NAGSLY_NOW - 31*86400)) APPROVED
+    elif [[ "$cleanup" == ignore ]]; then
+      operation=--ignore
+    fi
+    NAGSLY_DRY_FIRE= run bash -c 'printf "do not consume me\n" | "$PR_PLUGIN" "$@"' bash "$operation" "$PR_ID"
+    [ "$status" -eq 0 ]
+    [ ! -e "$NAGSLY_DIR/consumed-input" ]
+    if [[ "$cleanup" == transition ]]; then
+      [ "$(jq -r .status "$PR_FILE")" = waiting ]
+    else
+      [ ! -e "$PR_FILE" ]
+    fi
+  done
+  [ -f "$PR_IGNORE" ]
+  [ "$(grep -c -- "--remove nagsly-pr-$PR_ID" "$NAGSLY_DIR/notification.calls")" -eq 3 ]
+  [ ! -e "$NAGSLY_DIR/audio.calls" ]
+}
+
+@test "proactive PR rejects duplicate results within paginated scope before creating monitors" {
+  pr_proactive_setup
+  jq '.[0].total_count=2 | . + [.[0]]' "$NAGSLY_DIR/pr-fixtures/search.json" > "$TEST_DIR/duplicates"
+  mv "$TEST_DIR/duplicates" "$NAGSLY_DIR/pr-fixtures/search.json"
+  pr_sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'incomplete or invalid discovery response'* ]] || false
+  [ ! -e "$PR_FILE" ]
+  [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+  jq -es 'all(.[]; .[0] != "pr")' "$NAGSLY_DIR/gh.calls"
+}
+
+@test "proactive PR hash failures prevent registration and discovery without clearing ignored records" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  mkdir -p "$(dirname "$PR_IGNORE")"
+  mv "$PR_FILE" "$PR_IGNORE"
+  cp "$PR_IGNORE" "$TEST_DIR/original-ignore"
+  cat > "$PR_STUB_DIR/shasum" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$HASH_OUTPUT"
+exit "$HASH_RC"
+EOF
+  chmod +x "$PR_STUB_DIR/shasum"
+  local failure operation
+  for failure in failed malformed; do
+    export HASH_OUTPUT=abcdef123456 HASH_RC=1
+    if [[ "$failure" == malformed ]]; then
+      export HASH_OUTPUT=not-a-hash HASH_RC=0
+    fi
+    for operation in --register --sync; do
+      run "$PR_PLUGIN" "$operation" "$PR_URL"
+      [ "$status" -ne 0 ]
+      cmp "$TEST_DIR/original-ignore" "$PR_IGNORE"
+      [ "$(find "$NAGSLY_DIR/monitors.d" -type f | wc -l | tr -d ' ')" -eq 0 ]
+      [ ! -e "$NAGSLY_TEST_NOTIFY_LOG" ]
+    done
+  done
+}
+
+@test "proactive PR review parser failure preserves its record and still checks later monitors" {
+  pr_proactive_setup
+  pr_seed_monitor approved
+  cp "$PR_FILE" "$TEST_DIR/original"
+  jq '.id="pr-zlater" | .number="124" | .url="https://github.com/acme/app/pull/124" | .status="waiting" | .last_state="waiting"' \
+    "$PR_FILE" > "$NAGSLY_DIR/monitors.d/pr-zlater.json"
+  printf '{"pr":{"orgs":[],"repos":[]}}' > "$NAGSLY_DIR/config.json"
+  pr_snapshot OPEN "$NAGSLY_NOW" APPROVED
+  export REAL_SUPER="$(command -v super)"
+  cat > "$PR_STUB_DIR/super" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *'coalesce(reviewDecision, "")'* ]]; then
+  input="$(cat)"
+  if jq -e '.number == 123' <<<"$input" >/dev/null; then
+    printf 'review parser failed\n' >&2
+    exit 1
+  fi
+  exec "$REAL_SUPER" "$@" <<<"$input"
+fi
+exec "$REAL_SUPER" "$@"
+EOF
+  cat > "$PR_STUB_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+jq -cn --args '$ARGS.positional' -- "$@" >> "$NAGSLY_DIR/gh.calls"
+case "$1 $2" in
+  'pr view') jq --arg url "$3" '. + {url:$url,number:($url|split("/")|last|tonumber)}' "$NAGSLY_DIR/pr-fixtures/view.json" ;;
+  'pr checks') printf '[]\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$PR_STUB_DIR/super"
+  pr_sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'review parser failed'* ]] || false
+  cmp "$TEST_DIR/original" "$PR_FILE"
+  [ "$(jq -r .status "$NAGSLY_DIR/monitors.d/pr-zlater.json")" = approved ]
+  [ "$(<"$NAGSLY_TEST_NOTIFY_LOG")" = approved ]
+  jq -es 'any(.[]; .[0:3] == ["pr","checks","https://github.com/acme/app/pull/124"])' "$NAGSLY_DIR/gh.calls"
 }
 
 # (No test for the "zero plugins installed" hint: the binary's PATH self-heal

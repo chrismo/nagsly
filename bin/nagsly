@@ -785,14 +785,27 @@ cmd_monitor() {
         printf '%-20s %-7s %-22s %s  %s\n' "$id" "$kind" "$status" "$title" "$url"
       done
       ;;
-    rm)
-      id="${1:-}"
-      file="$(monitor_file_for_id "$id")" || die "monitor rm: invalid monitor id '$id'"
-      [[ -f "$file" && ! -L "$file" ]] || die "monitor rm: no monitor '$id'"
-      rm -f "$file"
-      echo "nagsly: removed monitor $id"
+    rm|ignore|unignore)
+      (( $# == 1 )) || die "monitor $action: expected <id>"
+      id="$1"
+      file="$(monitor_file_for_id "$id")" || die "monitor $action: invalid monitor id '$id'"
+      if [[ "$action" == unignore ]]; then
+        [[ "$id" == pr-* ]] || die 'monitor unignore: only PR monitors support ignores'
+        nagsly-monitor-pr --unignore "$id"
+        return
+      fi
+      [[ -f "$file" && ! -L "$file" ]] || die "monitor $action: no monitor '$id'"
+      kind="$(jq -er '.kind | select(type == "string")' "$file")" || die "invalid monitor: $file"
+      if [[ "$kind" == pr ]]; then
+        nagsly-monitor-pr --ignore "$id"
+      elif [[ "$action" == ignore ]]; then
+        die 'monitor ignore: only PR monitors support ignores; use rm for other kinds'
+      else
+        rm -f "$file"
+        echo "nagsly: removed monitor $id"
+      fi
       ;;
-    *) die "monitor: expected add <kind> [args], list, or rm <id>" ;;
+    *) die "monitor: expected add <kind> [args], list, rm, ignore, or unignore <id>" ;;
   esac
 }
 
@@ -1103,7 +1116,9 @@ nagsly — a continuous, dismiss-to-stop alarm for macOS
   nagsly sync [<name>|--due]        check all or one integration; --due honors cadence
   nagsly monitor [list]             list active/completed monitors
   nagsly monitor add <kind> [args]  register via nagsly-monitor-<kind> on PATH
-  nagsly monitor rm <id>            remove a monitor
+  nagsly monitor rm <id>            remove a monitor (PRs: ignore)
+  nagsly monitor ignore <id>        suppress a PR until it ages out
+  nagsly monitor unignore <id>      allow automatic PR discovery again
 
   nagsly <command> --help           this usage; fetch and monitor add also list plugins
 EOF

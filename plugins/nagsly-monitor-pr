@@ -4,6 +4,183 @@ set -euo pipefail
 export ASDF_SUPERDB_VERSION="${ASDF_SUPERDB_VERSION:-0.3.0}"
 CONFIG_DIR="${NAGSLY_DIR:-$HOME/.config/nagsly}"
 MONITORS_D="$CONFIG_DIR/monitors.d"
+IGNORED_D="$CONFIG_DIR/state/pr-ignored"
+
+load_settings() {
+  local config='{}'
+  if [[ -f "$CONFIG_DIR/config.json" ]]; then config="$(<"$CONFIG_DIR/config.json")"; fi
+  settings="$(jq -ce '
+    (if has("pr") then .pr else {} end) | select(type == "object") |
+    {orgs: [], repos: [], activity_window_days: 30, terminal_retention_hours: 24} + . |
+    select((.orgs | type == "array") and (.repos | type == "array")) |
+    select(all(.orgs[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$"))) |
+    select(all(.repos[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$"))) |
+    select(.activity_window_days | type == "number" and . == floor and . >= 1 and . <= 3650) |
+    select(.terminal_retention_hours | type == "number" and . == floor and . >= 1 and . <= 8760)
+  ' <<<"$config")" || { echo 'nagsly-sync-pr: invalid pr config' >&2; return 1; }
+  now="${NAGSLY_NOW:-$(date +%s)}"
+  [[ "$now" =~ ^[0-9]{1,10}$ ]] || { echo 'nagsly-sync-pr: invalid NAGSLY_NOW' >&2; return 1; }
+  now=$((10#$now))
+  window_days="$(jq -r '.activity_window_days' <<<"$settings")" || return 1
+  retention_hours="$(jq -r '.terminal_retention_hours' <<<"$settings")" || return 1
+  cutoff=$((now - window_days * 86400))
+}
+
+pr_id() {
+  local hash
+  hash="$(printf '%s' "$1" | shasum -a 256 | cut -c1-12)" || return 1
+  [[ "$hash" =~ ^[0-9a-f]{12}$ ]] || return 1
+  printf 'pr-%s' "$hash"
+}
+
+write_record() {
+  local file="$1" record="$2"
+  [[ ! -L "$file" ]] || return 1
+  printf '%s\n' "$record" > "$file.tmp.$$" || return 1
+  mv -f "$file.tmp.$$" "$file"
+}
+
+clear_notification() {
+  local id="$1" label record job pid job_pid attempts pattern query_rc running
+  [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
+  if [[ -f "$MONITORS_D/$id.json" ]]; then
+    label="$(jq -er '.notification_label // ""' "$MONITORS_D/$id.json")" || return 1
+    if [[ -n "$label" ]]; then
+      [[ "$label" =~ ^com\.chrismo\.nagsly\.pr\.[0-9]+\.[0-9]+$ ]] || return 1
+      pid="$(jq -r '.notification_pid // ""' "$MONITORS_D/$id.json")" || return 1
+      if job="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
+        job_pid="$(awk '$1 == "pid" && $2 == "=" {print $3}' <<<"$job")"
+        [[ -z "$job_pid" ]] || pid="$job_pid"
+        [[ -z "$pid" || "$pid" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+        record="$(jq -c --arg pid "$pid" '.notification_pid = $pid' "$MONITORS_D/$id.json")" || return 1
+        write_record "$MONITORS_D/$id.json" "$record" || return 1
+        launchctl remove "$label" || return 1
+      fi
+      [[ -z "$pid" || "$pid" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+      pattern="[n]agsly-monitor-pr --notify .* ${label//./\\.}$"
+      attempts=0
+      while :; do
+        running=0
+        if pgrep -f "$pattern" >/dev/null; then running=1; else
+          query_rc=$?
+          [[ "$query_rc" == 1 ]] || return 1
+        fi
+        if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then running=1; fi
+        (( running )) || break
+        if (( attempts >= 10 )); then
+          echo "nagsly-sync-pr: notification job $label did not stop; cleanup deferred" >&2
+          return 1
+        fi
+        sleep 1
+        attempts=$((attempts + 1))
+      done
+      record="$(jq -c 'del(.notification_label, .notification_pid)' "$MONITORS_D/$id.json")" || return 1
+      write_record "$MONITORS_D/$id.json" "$record" || return 1
+    fi
+  fi
+  command -v alerter >/dev/null 2>&1 || { echo 'nagsly-sync-pr: alerter not found; cannot clear notification' >&2; return 1; }
+  alerter --remove "nagsly-pr-$id" </dev/null
+}
+
+ignore_monitor() {
+  local id="$1" file record
+  [[ "$id" =~ ^pr-[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
+  file="$MONITORS_D/$id.json"
+  [[ -f "$file" && ! -L "$file" ]] || { echo "nagsly: no PR monitor '$id'" >&2; return 1; }
+  record="$(jq -ce --arg id "$id" 'select(.id == $id and .kind == "pr")' "$file")" || return 1
+  mkdir -p "$IGNORED_D" || return 1
+  clear_notification "$id" || return 1
+  write_record "$IGNORED_D/$id.json" "$record" || return 1
+  rm -f "$file" || return 1
+  echo "nagsly: ignored PR $id"
+}
+
+unignore_monitor() {
+  local id="$1"
+  [[ "$id" =~ ^pr-[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
+  [[ -f "$IGNORED_D/$id.json" && ! -L "$IGNORED_D/$id.json" ]] || { echo "nagsly: no ignored PR '$id'" >&2; return 1; }
+  rm -f "$IGNORED_D/$id.json" || return 1
+  echo "nagsly: unignored PR $id; eligible PRs return on next sync"
+}
+
+snapshot_times() {
+  local view="$1"
+  jq -er '
+    def epoch:
+      if type == "string" then fromdateiso8601 else error("missing timestamp") end |
+      if . >= 0 and . <= 9999999999 and . == floor then . else error("invalid timestamp") end;
+    select(.state == "OPEN" or .state == "MERGED" or .state == "CLOSED") |
+    (.updatedAt | epoch) as $updated |
+    (if .state == "MERGED" then .mergedAt | epoch
+     elif .state == "CLOSED" then .closedAt | epoch else 0 end) as $terminal |
+    "\($updated)|\($terminal)"
+  ' <<<"$view"
+}
+
+read_snapshot() {
+  gh pr view "$1" --json number,title,url,state,reviewDecision,isDraft,updatedAt,mergedAt,closedAt
+}
+
+expire_ignores() {
+  local files file record url view times updated _terminal failed=0
+  shopt -s nullglob
+  files=("$IGNORED_D"/pr-*.json)
+  shopt -u nullglob
+  (( ${#files[@]} > 0 )) || return 0
+  for file in "${files[@]}"; do
+    [[ ! -L "$file" ]] || { failed=1; continue; }
+    record="$(<"$file")"
+    url="$(jq -er '.url | select(type == "string" and test("^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+$"))' <<<"$record")" || { failed=1; continue; }
+    view="$(read_snapshot "$url")" || { failed=1; continue; }
+    times="$(snapshot_times "$view")" || { failed=1; continue; }
+    IFS='|' read -r updated _terminal <<<"$times"
+    if (( updated < cutoff )); then rm -f "$file" || failed=1; fi
+  done
+  return "$failed"
+}
+
+discover_prs() {
+  local scopes scope login cutoff_iso pages items all_items='[]' item url id record records existing_urls
+  scopes="$(jq -r '(.orgs[] | "org:" + .), (.repos[] | "repo:" + .)' <<<"$settings")" || return 1
+  [[ -n "$scopes" ]] || return 0
+  login="$(gh api user --jq .login)" || return 1
+  [[ "$login" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || { echo 'nagsly-sync-pr: invalid GitHub login' >&2; return 1; }
+  cutoff_iso="$(jq -nr --argjson cutoff "$cutoff" '$cutoff | todateiso8601')" || return 1
+  while IFS= read -r scope; do
+    pages="$(gh api --method GET --paginate --slurp search/issues -f "q=is:pr is:open author:$login updated:>=$cutoff_iso $scope" -f per_page=100)" || return 1
+    items="$(jq -ce --argjson cutoff "$cutoff" '
+      select(type == "array" and length > 0) |
+      select(all(.[]; .incomplete_results == false and (.total_count | type == "number" and . >= 0 and . <= 1000) and (.items | type == "array"))) |
+      .[0].total_count as $count |
+      select(all(.[]; .total_count == $count)) |
+      [.[].items[]] | select(length == $count and (unique_by(.html_url) | length) == $count) |
+      select(all(.[]; (.number | type == "number" and . == floor and . > 0) and
+        (.title | type == "string") and
+        (.html_url | type == "string" and test("^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+$")) and
+        (.updated_at | fromdateiso8601 | type == "number"))) |
+      map(select(.updated_at | fromdateiso8601 >= $cutoff))
+    ' <<<"$pages")" || { echo 'nagsly-sync-pr: incomplete or invalid discovery response' >&2; return 1; }
+    all_items="$(jq -cn --argjson a "$all_items" --argjson b "$items" '$a + $b | unique_by(.html_url)')" || return 1
+  done <<<"$scopes"
+  mkdir -p "$MONITORS_D" || return 1
+  shopt -s nullglob
+  records=("$MONITORS_D"/pr-*.json "$IGNORED_D"/pr-*.json)
+  shopt -u nullglob
+  existing_urls='[]'
+  if (( ${#records[@]} > 0 )); then
+    existing_urls="$(jq -cs '[.[].url]' "${records[@]}")" || return 1
+  fi
+  items="$(jq -c '.[]' <<<"$all_items")" || return 1
+  [[ -n "$items" ]] || return 0
+  while IFS= read -r item; do
+    url="$(jq -r '.html_url' <<<"$item")" || return 1
+    id="$(pr_id "$url")" || return 1
+    [[ ! -f "$MONITORS_D/$id.json" && ! -f "$IGNORED_D/$id.json" ]] || continue
+    if jq -e --arg url "$url" 'index($url) != null' <<<"$existing_urls" >/dev/null; then continue; fi
+    record="$(jq -c --arg id "$id" '{id:$id,kind:"pr",number:(.number|tostring),title,url:.html_url,status:"waiting",last_state:"waiting"}' <<<"$item")" || return 1
+    write_record "$MONITORS_D/$id.json" "$record" || return 1
+  done <<<"$items"
+}
 
 json_quote() {
   local s="$1"
@@ -59,9 +236,10 @@ register() {
   title="$(super -dynamic -f line -c 'coalesce(title, "")' - <<<"$view")"
   url="$(super -dynamic -f line -c 'coalesce(url, "")' - <<<"$view")"
   [[ "$number" =~ ^[0-9]+$ && -n "$url" ]] || { echo 'nagsly monitor add pr: gh returned an invalid PR snapshot' >&2; return 1; }
-  id="pr-$(printf '%s' "$url" | shasum -a 256 | cut -c1-12)"
+  id="$(pr_id "$url")" || return 1
   mkdir -p "$MONITORS_D"
   file="$MONITORS_D/$id.json"
+  rm -f "$IGNORED_D/$id.json" || return 1
   if [[ -f "$file" ]]; then
     printf 'nagsly: PR #%s already registered (%s); use nagsly monitor rm %s to reset\n' "$number" "$id" "$id"
     return 0
@@ -76,10 +254,12 @@ register() {
 
 pr_state() {
   local view="$1" checks="$2" checks_rc="$3" state draft review fail pending
-  state="$(field "$view" state)"
+  state="$(field "$view" state)" || return 1
+  [[ "$state" == OPEN || "$state" == MERGED || "$state" == CLOSED ]] || return 1
   [[ "$state" == MERGED ]] && { printf merged; return; }
   [[ "$state" == CLOSED ]] && { printf closed; return; }
-  draft="$(super -dynamic -f line -c 'coalesce(isDraft, false)' - <<<"$view")"
+  draft="$(super -dynamic -f line -c 'coalesce(isDraft, false)' - <<<"$view")" || return 1
+  [[ "$draft" == true || "$draft" == false ]] || return 1
   [[ "$draft" == true ]] && { printf draft; return; }
   [[ "$checks_rc" == 0 || "$checks_rc" == 8 ]] || return 1
   # SuperDB's unnest silently produces an empty result for a non-array JSON
@@ -89,7 +269,8 @@ pr_state() {
   pending="$(super -dynamic -f line -c 'len([unnest this | where bucket == "pending"])' - <<<"$checks")" || return 1
   [[ "$fail" =~ ^[0-9]{1,8}$ && "$pending" =~ ^[0-9]{1,8}$ ]] || return 1
   (( fail > 0 )) && { printf checks_red; return; }
-  review="$(field "$view" reviewDecision)"
+  review="$(field "$view" reviewDecision)" || return 1
+  case "$review" in ''|REVIEW_REQUIRED|CHANGES_REQUESTED|APPROVED) ;; *) return 1 ;; esac
   case "$review" in
     CHANGES_REQUESTED) printf changes_requested ;;
     APPROVED) if (( pending > 0 )); then printf approved_ci_pending; else printf approved; fi ;;
@@ -112,6 +293,14 @@ pr_notification_body() {
 notify_worker() {
   local state="$1" title="$2" url="$3" group="$4" alerter_bin="$5" label="$6" body clicked rc=0
   body="$(pr_notification_body "$state")" || return 1
+  if [[ "$group" == nagsly-pr-pr-* ]]; then
+    local id="${group#nagsly-pr-}"
+    [[ "$id" =~ ^pr-[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
+    if ! jq -e --arg label "$label" '.notification_label == $label' "$MONITORS_D/$id.json" >/dev/null 2>&1; then
+      launchctl remove "$label"
+      return
+    fi
+  fi
   if clicked="$("$alerter_bin" --title "$title" --message "$body" --actions 'Open PR' --group "$group" 2>&1)"; then
     if [[ -n "$clicked" && "$clicked" != '@TIMEOUT' && "$clicked" != '@CLOSED' ]]; then
       /usr/bin/open "$url" >/dev/null 2>&1 || true
@@ -125,7 +314,7 @@ notify_worker() {
 }
 
 notify_transition() {
-  local state="$1" previous="$2" title="$3" url="$4" group="$5" label
+  local state="$1" previous="$2" title="$3" url="$4" group="$5" label record id
   if [[ -n "${NAGSLY_TEST_NOTIFY_LOG:-}" ]]; then printf '%s\n' "$state" >> "$NAGSLY_TEST_NOTIFY_LOG"; return 0; fi
   [[ -n "${NAGSLY_DRY_FIRE:-}" ]] && return 0
   if pr_notification_body "$state" >/dev/null; then
@@ -133,7 +322,13 @@ notify_transition() {
       echo 'nagsly-sync-pr: alerter not found; cannot notify state transition' >&2
       return 1
     fi
+    id="${group#nagsly-pr-}"
+    if jq -e '.notification_label | type == "string"' "$MONITORS_D/$id.json" >/dev/null; then
+      clear_notification "$id" || return 1
+    fi
     label="com.chrismo.nagsly.pr.$$.${RANDOM}"
+    record="$(jq -c --arg label "$label" '.notification_label = $label' "$MONITORS_D/$id.json")" || return 1
+    write_record "$MONITORS_D/$id.json" "$record" || return 1
     if ! launchctl submit -l "$label" -e "$CONFIG_DIR/notification.err.log" -- "$(command -v nagsly-monitor-pr)" --notify "$state" "$title" "$url" "$group" "$(command -v alerter)" "$label"; then
       echo 'nagsly-sync-pr: notification submission failed' >&2
       return 1
@@ -144,7 +339,7 @@ notify_transition() {
       echo 'nagsly-sync-pr: alerter not found; cannot clear state transition' >&2
       return 1
     fi
-    if ! alerter --remove "$group"; then
+    if ! clear_notification "${group#nagsly-pr-}"; then
       echo "nagsly-sync-pr: could not clear notification for $title" >&2
       return 1
     fi
@@ -154,28 +349,50 @@ notify_transition() {
 sync_monitors() {
   command -v gh >/dev/null 2>&1 || { echo 'nagsly-sync-pr: gh not found' >&2; return 127; }
   command -v jq >/dev/null 2>&1 || { echo 'nagsly-sync-pr: jq not found' >&2; return 127; }
-  [[ -d "$MONITORS_D" ]] || return 0
+  local settings now window_days retention_hours cutoff failed=0 discovery_ok=1
+  load_settings || return 1
+  if discover_prs; then
+    expire_ignores || failed=1
+  else
+    failed=1; discovery_ok=0
+  fi
+  [[ -d "$MONITORS_D" ]] || return "$failed"
   shopt -s nullglob
   local files=("$MONITORS_D"/pr-*.json)
   shopt -u nullglob
-  (( ${#files[@]} > 0 )) || return 0
-  local file monitor id number title url previous view checks checks_rc state status failed=0
+  (( ${#files[@]} > 0 )) || return "$failed"
+  local file monitor id number title url previous view checks checks_rc state times updated_at terminal_at
   for file in "${files[@]}"; do
+    [[ ! -L "$file" ]] || { failed=1; continue; }
     monitor="$(<"$file")"
-    id="$(field "$monitor" id)"; number="$(field "$monitor" number)"
-    [[ "$number" =~ ^[0-9]+$ ]] || { echo "nagsly-sync-pr: invalid stored PR number" >&2; return 1; }
-    title="$(field "$monitor" title)"; url="$(field "$monitor" url)"
+    if ! id="$(field "$monitor" id)" || ! number="$(field "$monitor" number)"; then failed=1; continue; fi
+    [[ "$id" =~ ^pr-[a-zA-Z0-9][a-zA-Z0-9-]*$ && "${file##*/}" == "$id.json" ]] || { failed=1; continue; }
+    [[ "$number" =~ ^[0-9]+$ ]] || { echo "nagsly-sync-pr: invalid stored PR number" >&2; failed=1; continue; }
+    if ! title="$(field "$monitor" title)" || ! url="$(field "$monitor" url)"; then failed=1; continue; fi
     if [[ ! "$url" =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ || "${url##*/}" != "$number" ]]; then
       echo "nagsly-sync-pr: invalid stored URL for PR #$number" >&2; failed=1; continue
     fi
-    previous="$(field "$monitor" last_state)"
-    status="$(field "$monitor" status)"
-    [[ "$status" == merged || "$status" == closed ]] && continue
-    view="$(gh pr view "$url" --json number,title,url,state,reviewDecision,isDraft 2>/dev/null)" || {
+    previous="$(field "$monitor" last_state)" || { failed=1; continue; }
+    view="$(read_snapshot "$url")" || {
       echo "nagsly-sync-pr: failed to read PR #$number ($url)" >&2; failed=1; continue;
     }
-    checks_rc=0
-    if checks="$(gh pr checks "$url" --json bucket 2>/dev/null)"; then checks_rc=0; else checks_rc=$?; fi
+    times="$(snapshot_times "$view")" || {
+      echo "nagsly-sync-pr: invalid lifecycle snapshot for PR #$number" >&2; failed=1; continue;
+    }
+    IFS='|' read -r updated_at terminal_at <<<"$times"
+    if (( terminal_at > 0 )); then
+      if (( discovery_ok && now >= terminal_at + retention_hours * 3600 )); then
+        if clear_notification "$id"; then rm -f "$file" || failed=1; else failed=1; fi
+        continue
+      fi
+    elif (( discovery_ok && updated_at < cutoff )); then
+      if clear_notification "$id"; then rm -f "$file" || failed=1; else failed=1; fi
+      continue
+    fi
+    checks_rc=0; checks='[]'
+    if (( terminal_at == 0 )); then
+      if checks="$(gh pr checks "$url" --json bucket 2>/dev/null)"; then checks_rc=0; else checks_rc=$?; fi
+    fi
     if state="$(pr_state "$view" "$checks" "$checks_rc")"; then :; else
       echo "nagsly-sync-pr: invalid checks snapshot for PR #$number (gh exit $checks_rc)" >&2
       failed=1; continue
@@ -188,16 +405,33 @@ sync_monitors() {
     local updated
     updated="$MONITORS_D/.$(basename "$file").tmp.$$"
     local state_json; state_json="$(json_quote "$state")"
-    super -dynamic -f json -c "put last_state := $state_json | put status := $state_json" "$file" > "$updated"
-    mv -f "$updated" "$file"
-    # Retain terminal monitors, but continue checking the remaining open PRs.
+    if ! super -dynamic -f json -c "put last_state := $state_json | put status := $state_json" "$file" > "$updated"; then
+      rm -f "$updated"; failed=1; continue
+    fi
+    mv -f "$updated" "$file" || failed=1
   done
   return "$failed"
 }
 
-usage() { echo 'Usage: nagsly monitor add pr [number|URL|branch-or-partial] (omit ref for current branch)'; }
+usage() {
+  echo 'Usage: nagsly monitor add pr [number|URL|branch-or-partial] (omit ref for current branch)'
+  echo '       nagsly monitor ignore|unignore <pr-id> (rm also ignores PRs)'
+  echo 'Auto-discovery: config pr.orgs/pr.repos; defaults: 30 days activity, 24 hours terminal retention.'
+}
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    --notify|-h|--help|help) ;;
+    *)
+      mkdir -p "$CONFIG_DIR/state"
+      if ! mkdir "$CONFIG_DIR/state/pr.lock" 2>/dev/null; then
+        echo 'nagsly: PR operation already running; retry, or remove stale state/pr.lock after verifying no PR operation is running' >&2
+        exit 1
+      fi
+      trap 'rmdir "$CONFIG_DIR/state/pr.lock"' EXIT
+      trap 'exit 1' HUP INT TERM
+      ;;
+  esac
   case "${1:-}" in
     --register)
       shift
@@ -207,6 +441,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       esac
       ;;
     --sync) sync_monitors ;;
+    --ignore) ignore_monitor "${2:-}" ;;
+    --unignore) unignore_monitor "${2:-}" ;;
     --notify) shift; notify_worker "$@" ;;
     -h|--help|help) usage ;;
     *) register "${1:-}" ;;

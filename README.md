@@ -86,7 +86,8 @@ config + events intact).
 
 Register a monitor; it persists after the command exits and is checked by the
 core sync agent. State transitions produce a macOS toast (and a brief sound
-where appropriate); completed monitors remain listed until removed. Run
+where appropriate). Gmail monitors remain listed until removed; PR monitors
+age out automatically. Run
 `nagsly monitor add` (or `nagsly monitor add --help`) to discover installed
 kinds; `nagsly monitor` also shows this hint when there are no stored monitors.
 Core usage describes only the generic monitor command; each plugin owns its
@@ -96,7 +97,9 @@ specific help (`nagsly monitor add <kind> --help`).
 nagsly monitor add pr 123                       # number, URL, branch, or partial branch
 nagsly monitor add pr feature                   # unique matching branch; omit ref for current branch
 nagsly monitor list
-nagsly monitor rm <monitor-id>
+nagsly monitor rm <monitor-id>                  # PRs: ignore; other kinds: remove
+nagsly monitor ignore <pr-monitor-id>
+nagsly monitor unignore <pr-monitor-id>
 nagsly monitor add gmail sarah@example.com      # newest sent thread to this recipient
 nagsly monitor add gmail "subject:launch review" # pass through Gmail search syntax
 nagsly monitor add gmail launch                 # bare word becomes subject:launch
@@ -104,6 +107,51 @@ nagsly monitor add gmail 'https://mail.google.com/mail/u/0/#sent/THREAD_ID' # Gm
 ```
 
 PR monitors use `gh` and classify draft/review/check/merged/closed states.
+They can automatically discover your open PRs, including drafts, in allowed
+organizations and/or exact repositories. Set `pr` in `config.json`, for example:
+
+```json
+"pr": {
+  "orgs": ["dscout"],
+  "repos": [],
+  "activity_window_days": 30,
+  "terminal_retention_hours": 24
+}
+```
+
+For personal repositories, use `"repos": ["chrismo/nagsly", "chrismo/grdy"]`.
+Organizations and repositories form a union; empty lists disable discovery.
+Authorship uses the authenticated `gh` account, not your git author identity.
+Keep `pr` in `sync_plugins` to schedule discovery and monitoring, or run
+`nagsly sync pr` immediately. Changing the allowlist affects discovery, not
+already registered monitors.
+
+All open PR monitors—including manually registered PRs—expire when GitHub's
+`updatedAt` is older than the activity window. Updates by other people or bots
+count too. Merged/closed PRs remain for 24 hours from GitHub's actual completion
+time (configurable), then disappear. Terminal retention overrides inactivity.
+Cleanup clears the PR's outstanding notification without changing GitHub.
+Eligible old PRs return when activity resumes; manual-only PRs outside discovery
+scope need manual registration again. Discovery is quiet except for a PR already
+approved, failing checks, or awaiting requested changes, which notifies once.
+
+`monitor ignore` (also `monitor rm` for PRs) clears the active monitor and
+suppresses rediscovery. Suppression persists through new activity and expires
+only after a fresh GitHub snapshot confirms a full inactivity window; later
+activity can then bring it back. `monitor unignore` permits discovery on the
+next sync. Manual registration overrides an ignore immediately. Ignore records
+live in `state/pr-ignored/`, separate from active monitors.
+
+Discovery paginates each scope and reports incomplete searches, including
+GitHub's 1000-result search ceiling, rather than registering a partial set.
+Discovery failure does not prevent checking existing monitors. Expiration uses
+fresh individual snapshots, never missing search results or cached timestamps;
+API failures preserve the affected monitor or ignore for retry. A discovery
+failure also defers all cleanup for that pass. PR sync, registration, and ignore
+operations share `state/pr.lock`; overlapping operations fail for retry. After a
+forcibly interrupted operation, remove a stale lock only once no PR operation
+is running.
+
 Background checks use each monitor's stored PR URL, so they work outside the
 repository where the monitor was registered. A failure on one monitor does not
 prevent the other monitors from being checked; the integration still reports
@@ -214,7 +262,9 @@ purpose and are most likely to let slip.
 
 `~/.config/nagsly/config.json` (seeded from [`config.example.json`](config.example.json)).
 Knobs: `toast_lead`, `alarm_lead`, `toast_enabled`, `alarm_enabled`, `sound_file`,
-`alarm_timeout`, `alarm_gap`, `sync_plugins`, and `sync_every`. Sync cadence values
+`alarm_timeout`, `alarm_gap`, `sync_plugins`, `sync_every`, and the plugin-owned
+`pr` object. PR activity days accept integers 1–3650; terminal retention hours
+accept integers 1–8760. Sync cadence values
 are seconds (minimum 60); the example GWS refresh cadence is 900 seconds
 (the scheduler uses 900 when no per-integration cadence is configured).
 `NAGSLY_SYNC_TIMEOUT` bounds each integration check (default 120 seconds).
@@ -232,9 +282,11 @@ must be a JSON object with string fields `id`, `kind`, `title`, and `status`;
 `url` is an optional string. `kind` must equal `K`, and `id` must equal the
 filename without `.json` and have the form `K-<stable-id>`, with `<stable-id>`
 matching `[a-zA-Z0-9][a-zA-Z0-9-]*`. Plugin-specific fields are allowed.
-Registration should derive a stable ID from the remote identity, deduplicate
-without resetting completed state, and retain completed records until explicit
-`nagsly monitor rm <id>`. Core validates shared fields when listing and
+Registration should derive a stable ID from the remote identity and deduplicate
+without resetting completed state. Plugins may define automatic lifecycle
+cleanup; otherwise completed records remain until `nagsly monitor rm <id>`.
+The bundled PR plugin also accepts `--ignore <id>` and `--unignore <id>`;
+core delegates PR removal/ignore commands to it. Core validates shared fields when listing and
 validates paths when removing; the plugin owns its state transitions and
 notification behavior.
 
